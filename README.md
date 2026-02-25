@@ -1,10 +1,10 @@
 # Velocity
 
-Local dashboard for AI coding sessions — analytics, terminals, workflows, and marketplace. 100% local, zero config.
+Local-first workspace for Claude Code, Codex CLI, and Gemini CLI. Inspect sessions, track costs, manage tools/skills, and run workflow automation from one dashboard.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Built with Bun](https://img.shields.io/badge/Built_with-Bun-f9f1e1.svg)](https://bun.sh)
-[![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-black.svg)](https://nextjs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ![Velocity Dashboard](docs/screenshots/dashboard.png)
@@ -13,20 +13,20 @@ Local dashboard for AI coding sessions — analytics, terminals, workflows, and 
 
 - **100% local** — No cloud, no accounts, no telemetry. Your data stays on your machine.
 - **Zero config** — `bun install && bun dev`. SQLite database auto-creates on first run.
-- **Built for Claude Code, Codex CLI, and Gemini CLI** — Parses local session logs, tracks costs, and manages provider-scoped workflows/config.
+- **Built for Claude Code, Codex CLI, and Gemini CLI** — Parses local logs, normalizes usage analytics, and manages provider-scoped workflows/config.
 
 ## Features
 
 | Feature     | Status | Description                                                                       |
 | ----------- | ------ | --------------------------------------------------------------------------------- |
-| Console     | Beta   | Multi-tab PTY terminal for running Claude Code sessions with real-time output     |
+| Console     | Beta   | Multi-tab PTY terminal for running CLI sessions with real-time output              |
 | Analytics   | Stable | Cost tracking, token usage breakdowns, tool frequency, and session-level insights |
 | Usage       | Stable | Block-based usage monitoring with weekly and monthly views                        |
-| Workflows   | Stable | Visual canvas builder for multi-step agent orchestrations                         |
-| Agents      | Stable | AI-powered agent builder with configurable models and tools                       |
+| Workflows   | Stable | Visual canvas builder for provider-scoped, multi-step agent orchestration          |
+| Agents      | Stable | AI-powered agent builder with configurable roles, models, and tool access         |
 | MCP Servers | Stable | MCP server management — add, configure, and monitor servers                       |
-| Settings    | Stable | Configuration hub for Claude Code, API keys, and app preferences                  |
-| Skills      | Stable | Skill library for browsing, editing, and organizing reusable prompts              |
+| Settings    | Stable | Configuration hub for Claude/Codex/Gemini settings, API keys, and app preferences |
+| Skills      | Stable | Skill library for creating, editing, and organizing reusable instruction packs     |
 | Marketplace | Beta   | Plugin discovery and installation (GitHub search reliability varies)              |
 | Hook AI Gen | Beta   | AI-generated Git hook configurations (output quality varies, always review)       |
 

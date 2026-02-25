@@ -1,7 +1,7 @@
 {
   "name": "velocity",
   "version": "0.1.0",
-  "description": "Local dashboard for AI coding sessions — analytics, terminals, workflows, and marketplace",
+  "description": "Local-first workspace for Claude Code, Codex CLI, and Gemini CLI with sessions, analytics, workflows, and tools",
   "author": "jaewon42",
   "license": "AGPL-3.0-or-later",
   "repository": {
@@ -13,15 +13,18 @@
     "url": "https://github.com/OptimiLabs/velocity/issues"
   },
   "keywords": [
-    "claude",
-    "claude-code",
     "ai-coding",
+    "claude-code",
+    "openai-codex",
+    "gemini-cli",
     "developer-tools",
-    "dashboard",
-    "analytics",
-    "terminal",
-    "workflows",
-    "local-first"
+    "local-first",
+    "workflow-automation",
+    "session-analytics",
+    "model-context-protocol",
+    "nextjs",
+    "bun",
+    "sqlite"
   ],
   "scripts": {
     "dev": "next dev",
