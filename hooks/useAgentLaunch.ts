@@ -1,0 +1,100 @@
+"use client";
+
+import { useRef, useEffect } from "react";
+import { composeWorkflowPrompt } from "@/lib/workflow/prompt";
+import type { Workflow } from "@/types/workflow";
+
+/**
+ * Auto-launch agent session from ?agent= or ?resume= query params.
+ * Clears the query param from the URL immediately after reading it.
+ */
+export function useAgentLaunch(
+  createSession: (opts: {
+    cwd: string;
+    label?: string;
+    prompt?: string;
+    model?: string;
+    effort?: "low" | "medium" | "high";
+    claudeSessionId?: string;
+    agentName?: string;
+    source?: "user" | "auto";
+  }) => string | null,
+) {
+  // Auto-launch agent session from ?agent= query param
+  const agentLaunched = useRef(false);
+  useEffect(() => {
+    if (agentLaunched.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const agentName = params.get("agent");
+    if (!agentName) return;
+    agentLaunched.current = true;
+
+    // Clear the param from URL immediately
+    window.history.replaceState({}, "", "/");
+
+    // Fetch agent config + default cwd, then create session
+    Promise.all([
+      fetch(`/api/agents`).then((r) => r.json()),
+      fetch("/api/projects")
+        .then((r) => r.json())
+        .then((d) => d.projects ?? d)
+        .catch(() => []),
+    ]).then(([agents, projects]) => {
+      const agent = agents.find((a: { name: string }) => a.name === agentName);
+      if (!agent) return;
+      const cwd = projects?.[0]?.path || "~";
+      createSession({
+        cwd,
+        label: agent.name,
+        prompt: agent.prompt,
+        model: agent.model,
+        effort: agent.effort,
+        agentName: agent.name,
+        source: "auto",
+      });
+    });
+  }, [createSession]);
+
+  // Auto-resume session from ?resume= query param
+  const resumeLaunched = useRef(false);
+  useEffect(() => {
+    if (resumeLaunched.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const resumeId = params.get("resume");
+    const cwd = params.get("cwd") || "~";
+    if (!resumeId) return;
+    resumeLaunched.current = true;
+    window.history.replaceState({}, "", "/");
+    createSession({
+      cwd,
+      label: `Resume ${resumeId.slice(0, 8)}`,
+      claudeSessionId: resumeId,
+      source: "auto",
+    });
+  }, [createSession]);
+
+  // Auto-launch workflow from ?workflow= query param
+  const workflowLaunched = useRef(false);
+  useEffect(() => {
+    if (workflowLaunched.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const workflowId = params.get("workflow");
+    if (!workflowId) return;
+    workflowLaunched.current = true;
+    window.history.replaceState({}, "", "/");
+
+    Promise.all([
+      fetch("/api/workflows").then((r) => r.json()) as Promise<Workflow[]>,
+      fetch("/api/projects")
+        .then((r) => r.json())
+        .then((d) => d.projects ?? d)
+        .catch(() => []),
+    ]).then(([workflows, projects]) => {
+      const workflow = workflows.find((w) => w.id === workflowId);
+      if (!workflow) return;
+      const cwd = workflow.cwd || projects?.[0]?.path || "~";
+      const prompt = composeWorkflowPrompt(workflow);
+      createSession({ cwd, label: workflow.name, prompt, source: "auto" });
+    });
+  }, [createSession]);
+}

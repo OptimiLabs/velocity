@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Schema API"
+  short_description: "Help with Project Schema API tasks"
+  default_prompt: "Answer questions about this repo's schema and API routes. Use lib/db/schema.ts, lib/db/memory-schema.ts, and app/api/**/route.ts as sources and cite file paths."

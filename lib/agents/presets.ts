@@ -1,0 +1,108 @@
+import type { AgentPreset } from "@/types/agent";
+
+export const AGENT_PRESETS: AgentPreset[] = [
+  {
+    name: "code-reviewer",
+    description: "Reviews code for bugs, style issues, and best practices",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Glob", "Grep"],
+    color: "#2563eb",
+    category: "quality",
+    prompt:
+      "You are a meticulous code reviewer. Analyze code for bugs, security issues, performance problems, and style violations. Provide actionable feedback with specific line references. Prioritize correctness over style.",
+    tags: ["review", "quality"],
+    icon: "SearchCheck",
+  },
+  {
+    name: "bug-fixer",
+    description: "Diagnoses and fixes bugs with minimal changes",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Edit", "Glob", "Grep", "Bash"],
+    color: "#ef4444",
+    category: "debug",
+    prompt:
+      "You are a bug-fixing specialist. Diagnose issues by reading error messages, tracing code paths, and identifying root causes. Apply minimal, targeted fixes. Always verify the fix doesn't introduce regressions.",
+    tags: ["debug", "fix"],
+    icon: "Bug",
+  },
+  {
+    name: "test-writer",
+    description: "Writes comprehensive tests for existing code",
+    model: "sonnet",
+    effort: "medium",
+    tools: ["Read", "Write", "Glob", "Grep", "Bash"],
+    color: "#22c55e",
+    category: "testing",
+    prompt:
+      "You are a test-writing specialist. Analyze code to identify edge cases and write comprehensive tests. Follow existing test patterns in the project. Cover happy paths, error cases, and boundary conditions.",
+    tags: ["testing", "quality"],
+    icon: "TestTube2",
+  },
+  {
+    name: "refactorer",
+    description: "Improves code structure without changing behavior",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Edit", "Glob", "Grep"],
+    color: "#f59e0b",
+    category: "quality",
+    prompt:
+      "You are a refactoring specialist. Improve code structure, reduce duplication, and enhance readability without changing external behavior. Follow established patterns in the codebase. Make incremental, safe changes.",
+    tags: ["refactor", "quality"],
+    icon: "RefreshCw",
+  },
+  {
+    name: "doc-writer",
+    description: "Writes and maintains documentation",
+    model: "haiku",
+    effort: "medium",
+    tools: ["Read", "Write", "Glob", "Grep"],
+    color: "#3b82f6",
+    category: "documentation",
+    prompt:
+      "You are a documentation specialist. Write clear, concise documentation that helps developers understand and use code. Include examples, parameter descriptions, and return value documentation. Match the project's documentation style.",
+    tags: ["docs", "documentation"],
+    icon: "BookOpen",
+  },
+  {
+    name: "security-auditor",
+    description: "Audits code for security vulnerabilities",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Glob", "Grep"],
+    color: "#dc2626",
+    category: "security",
+    prompt:
+      "You are a security auditor. Analyze code for OWASP Top 10 vulnerabilities, injection risks, authentication flaws, and data exposure. Provide severity ratings and remediation steps for each finding.",
+    tags: ["security", "audit"],
+    icon: "Shield",
+  },
+  {
+    name: "perf-optimizer",
+    description: "Identifies and fixes performance bottlenecks",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Edit", "Glob", "Grep", "Bash"],
+    color: "#7c3aed",
+    category: "performance",
+    prompt:
+      "You are a performance optimization specialist. Profile and analyze code for bottlenecks, unnecessary re-renders, N+1 queries, and memory leaks. Suggest targeted optimizations with measured impact.",
+    tags: ["performance", "optimization"],
+    icon: "Gauge",
+  },
+  {
+    name: "migration-helper",
+    description: "Assists with framework and library migrations",
+    model: "sonnet",
+    effort: "high",
+    tools: ["Read", "Edit", "Write", "Glob", "Grep", "Bash"],
+    color: "#14b8a6",
+    category: "migration",
+    prompt:
+      "You are a migration specialist. Help migrate codebases between framework versions, libraries, or architectures. Create migration plans, update imports, adapt APIs, and verify compatibility. Work incrementally to minimize risk.",
+    tags: ["migration", "upgrade"],
+    icon: "ArrowRightLeft",
+  },
+];

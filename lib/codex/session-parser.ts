@@ -1,0 +1,582 @@
+import { calculateCost } from "@/lib/cost/calculator";
+import {
+  getCodexModel,
+  getCodexTokenTotals,
+  inferCodexToolError,
+  parseCodexToolInput,
+} from "@/lib/parser/codex";
+import { streamJsonlFile } from "@/lib/parser/jsonl";
+import { categorizeFilePath } from "@/lib/parser/session-utils";
+import { isCoreToolForProvider } from "@/lib/tools/provider-tools";
+import type { SessionStats } from "@/lib/parser/session-aggregator";
+import type {
+  AgentEntry,
+  EnrichedToolData,
+  FileReadEntry,
+  FileWriteEntry,
+  ModelUsageEntry,
+  SkillEntry,
+  ToolUsageEntry,
+} from "@/types/session";
+
+interface TokenSnapshot {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+const EMPTY_SNAPSHOT: TokenSnapshot = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
+function createEmptyToolUsage(name: string): ToolUsageEntry {
+  return {
+    name,
+    count: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    estimatedCost: 0,
+    errorCount: 0,
+  };
+}
+
+function createEmptyModelUsage(model: string): ModelUsageEntry {
+  return {
+    model,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cost: 0,
+    messageCount: 0,
+  };
+}
+
+function createEmptyStats(): SessionStats {
+  const enrichedTools: EnrichedToolData = {
+    skills: [],
+    agents: [],
+    mcpTools: {},
+    coreTools: {},
+    otherTools: {},
+    filesModified: [],
+    filesRead: [],
+    searchedPaths: [],
+  };
+
+  return {
+    messageCount: 0,
+    toolCallCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    thinkingBlocks: 0,
+    totalCost: 0,
+    toolUsage: {},
+    modelUsage: {},
+    enrichedTools,
+    autoSummary: null,
+    sessionRole: "standalone",
+    tags: [],
+    detectedInstructionPaths: [],
+    avgLatencyMs: 0,
+    p50LatencyMs: 0,
+    p95LatencyMs: 0,
+    maxLatencyMs: 0,
+    sessionDurationMs: 0,
+    detectedProvider: "codex",
+  };
+}
+
+function incrementPathCount(map: Map<string, number>, path: string) {
+  if (!path.trim()) return;
+  map.set(path, (map.get(path) || 0) + 1);
+}
+
+function extractApplyPatchPaths(rawPatch: string): string[] {
+  const paths: string[] = [];
+  const re = /\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = re.exec(rawPatch)) !== null) {
+    const filePath = match[1]?.trim();
+    if (filePath) paths.push(filePath);
+  }
+  return paths;
+}
+
+function parseToolOutputError(rawOutput: unknown): boolean {
+  if (typeof rawOutput !== "string" || rawOutput.length === 0) return false;
+
+  try {
+    const parsed = JSON.parse(rawOutput) as {
+      metadata?: { exit_code?: number };
+      error?: unknown;
+      status?: string;
+    };
+    if (
+      parsed.metadata &&
+      typeof parsed.metadata.exit_code === "number" &&
+      parsed.metadata.exit_code !== 0
+    ) {
+      return true;
+    }
+    if (parsed.error) return true;
+    if (typeof parsed.status === "string") {
+      return inferCodexToolError(rawOutput, parsed.status);
+    }
+  } catch {
+    // fall through to text-based detection
+  }
+
+  if (inferCodexToolError(rawOutput)) return true;
+  return /process exited with code\s+(-?\d+)/i.test(rawOutput) &&
+    !/process exited with code\s+0/i.test(rawOutput);
+}
+
+function getRecord(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return value as Record<string, unknown>;
+}
+
+function getString(
+  value: unknown,
+): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function applyModelDelta(
+  modelUsage: Record<string, ModelUsageEntry>,
+  model: string,
+  delta: TokenSnapshot,
+): number {
+  const cost = calculateCost(
+    model,
+    delta.inputTokens,
+    delta.outputTokens,
+    delta.cacheReadTokens,
+    delta.cacheWriteTokens,
+  );
+  const entry = modelUsage[model] ?? createEmptyModelUsage(model);
+  entry.inputTokens += delta.inputTokens;
+  entry.outputTokens += delta.outputTokens;
+  entry.cacheReadTokens += delta.cacheReadTokens;
+  entry.cacheWriteTokens += delta.cacheWriteTokens;
+  entry.cost += cost;
+  modelUsage[model] = entry;
+  return cost;
+}
+
+export async function parseCodexSession(filePath: string): Promise<SessionStats> {
+  const stats = createEmptyStats();
+
+  const toolUsage: Record<string, ToolUsageEntry> = {};
+  const modelUsage: Record<string, ModelUsageEntry> = {};
+  const skills: SkillEntry[] = [];
+  const agents: AgentEntry[] = [];
+  const mcpTools: Record<string, number> = {};
+  const filesModifiedMap = new Map<string, number>();
+  const filesReadMap = new Map<string, number>();
+  const searchedPaths = new Set<string>();
+  const toolCallIdToName = new Map<string, string>();
+  const modelMessageCounts = new Map<string, number>();
+
+  let currentModel: string | null = null;
+  let firstUserMessage: string | null = null;
+  let lastAgentMessage: string | null = null;
+  let isSubagent = false;
+
+  // Latency/session duration tracking
+  const turnLatencies: number[] = [];
+  let lastUserTimestamp: number | null = null;
+  let firstMessageTimestamp: number | null = null;
+  let lastMessageTimestamp: number | null = null;
+
+  let previousTotals: TokenSnapshot = { ...EMPTY_SNAPSHOT };
+
+  function ensureTool(name: string): ToolUsageEntry {
+    if (!toolUsage[name]) toolUsage[name] = createEmptyToolUsage(name);
+    return toolUsage[name];
+  }
+
+  function ensureModel(model: string): ModelUsageEntry {
+    if (!modelUsage[model]) modelUsage[model] = createEmptyModelUsage(model);
+    return modelUsage[model];
+  }
+
+  function markToolCall(
+    name: string,
+    callId: string | undefined,
+    input: unknown,
+    status?: string,
+  ) {
+    const entry = ensureTool(name);
+    entry.count++;
+    stats.toolCallCount++;
+
+    if (callId) {
+      toolCallIdToName.set(callId, name);
+    }
+
+    if (status && inferCodexToolError("", status)) {
+      entry.errorCount++;
+    }
+
+    if (name.startsWith("mcp__")) {
+      const segments = name.split("__");
+      const serverName = segments[1] || name;
+      mcpTools[serverName] = (mcpTools[serverName] || 0) + 1;
+    }
+
+    const record = getRecord(input);
+    if (!record) {
+      if (name === "apply_patch" && typeof input === "string") {
+        for (const patchPath of extractApplyPatchPaths(input)) {
+          incrementPathCount(filesModifiedMap, patchPath);
+        }
+      }
+      return;
+    }
+
+    if (name === "Skill") {
+      const skillName = getString(record.skill);
+      if (skillName) {
+        const existing = skills.find((s) => s.name === skillName);
+        if (existing) existing.count++;
+        else skills.push({ name: skillName, count: 1 });
+      }
+    }
+
+    if (name === "Task") {
+      const subagentType = getString(record.subagent_type);
+      if (subagentType) {
+        agents.push({
+          type: subagentType,
+          description: getString(record.description) || "",
+        });
+      }
+    }
+
+    if (name === "apply_patch") {
+      const patchText =
+        getString(record.patch) ??
+        getString(record.input) ??
+        getString(record.diff) ??
+        "";
+      for (const patchPath of extractApplyPatchPaths(patchText)) {
+        incrementPathCount(filesModifiedMap, patchPath);
+      }
+    }
+
+    if ((name === "read_file" || name === "Read") && record.file_path) {
+      incrementPathCount(filesReadMap, String(record.file_path));
+    }
+
+    if (
+      (name === "write_file" ||
+        name === "edit_file" ||
+        name === "Write" ||
+        name === "Edit") &&
+      record.file_path
+    ) {
+      incrementPathCount(filesModifiedMap, String(record.file_path));
+    }
+
+    if (
+      (name === "search_files" || name === "Grep" || name === "Glob") &&
+      record.path
+    ) {
+      searchedPaths.add(String(record.path));
+    }
+  }
+
+  for await (const msg of streamJsonlFile(filePath)) {
+    // Track timestamps for latency/duration metrics
+    if (msg.timestamp) {
+      const ts = new Date(msg.timestamp).getTime();
+      if (!Number.isNaN(ts)) {
+        if (firstMessageTimestamp === null) firstMessageTimestamp = ts;
+        lastMessageTimestamp = ts;
+      }
+    }
+
+    const modelFromContext = getCodexModel(msg);
+    if (modelFromContext) {
+      currentModel = modelFromContext;
+      ensureModel(modelFromContext);
+    }
+
+    if (msg.type === "session_meta") {
+      const payload = getRecord((msg as { payload?: unknown }).payload);
+      const source = getRecord(payload?.source);
+      if (source?.subagent) isSubagent = true;
+    }
+
+    const payload = getRecord((msg as { payload?: unknown }).payload);
+    const payloadType = getString(payload?.type);
+
+    if (msg.type === "event_msg" && payloadType === "user_message") {
+      stats.messageCount++;
+      if (!firstUserMessage) {
+        const m = getString(payload?.message);
+        if (m) firstUserMessage = m.slice(0, 240);
+      }
+
+      if (msg.timestamp) {
+        const ts = new Date(msg.timestamp).getTime();
+        if (!Number.isNaN(ts)) lastUserTimestamp = ts;
+      }
+    } else if (msg.type === "event_msg" && payloadType === "agent_message") {
+      stats.messageCount++;
+      const m = getString(payload?.message);
+      if (m) lastAgentMessage = m.slice(0, 500);
+
+      if (currentModel) {
+        modelMessageCounts.set(
+          currentModel,
+          (modelMessageCounts.get(currentModel) || 0) + 1,
+        );
+      }
+
+      if (msg.timestamp && lastUserTimestamp !== null) {
+        const ts = new Date(msg.timestamp).getTime();
+        if (!Number.isNaN(ts)) {
+          const delta = ts - lastUserTimestamp;
+          if (delta > 0 && delta < 600_000) turnLatencies.push(delta);
+        }
+        lastUserTimestamp = null;
+      }
+    } else if (msg.type === "event_msg" && payloadType === "agent_reasoning") {
+      stats.thinkingBlocks++;
+    } else if (msg.type === "event_msg" && payloadType === "task_complete") {
+      const finalMessage = getString(payload?.last_agent_message);
+      if (finalMessage) lastAgentMessage = finalMessage.slice(0, 500);
+    }
+
+    const totals = getCodexTokenTotals(msg);
+    if (totals) {
+      const inputDiff = totals.inputTokens - previousTotals.inputTokens;
+      const outputDiff = totals.outputTokens - previousTotals.outputTokens;
+      const cacheDiff = totals.cacheReadTokens - previousTotals.cacheReadTokens;
+      const cacheWriteDiff =
+        totals.cacheWriteTokens - previousTotals.cacheWriteTokens;
+      const sawCounterReset =
+        inputDiff < 0 ||
+        outputDiff < 0 ||
+        cacheDiff < 0 ||
+        cacheWriteDiff < 0;
+      const canUseLastUsageFallback =
+        totals.lastInputTokens > 0 ||
+        totals.lastOutputTokens > 0 ||
+        totals.lastCacheReadTokens > 0 ||
+        totals.lastCacheWriteTokens > 0;
+
+      const delta: TokenSnapshot =
+        sawCounterReset && canUseLastUsageFallback
+          ? {
+              inputTokens: totals.lastInputTokens,
+              outputTokens: totals.lastOutputTokens,
+              cacheReadTokens: totals.lastCacheReadTokens,
+              cacheWriteTokens: totals.lastCacheWriteTokens,
+            }
+          : {
+              inputTokens: Math.max(0, inputDiff),
+              outputTokens: Math.max(0, outputDiff),
+              cacheReadTokens: Math.max(0, cacheDiff),
+              cacheWriteTokens: Math.max(0, cacheWriteDiff),
+            };
+      previousTotals = {
+        inputTokens: totals.inputTokens,
+        outputTokens: totals.outputTokens,
+        cacheReadTokens: totals.cacheReadTokens,
+        cacheWriteTokens: totals.cacheWriteTokens,
+      };
+
+      stats.inputTokens += delta.inputTokens;
+      stats.outputTokens += delta.outputTokens;
+      stats.cacheReadTokens += delta.cacheReadTokens;
+      stats.cacheWriteTokens += delta.cacheWriteTokens;
+
+      const modelForTokens =
+        currentModel || Object.keys(modelUsage)[0] || "codex-unknown";
+      ensureModel(modelForTokens);
+      stats.totalCost += applyModelDelta(modelUsage, modelForTokens, delta);
+    }
+
+    if (msg.type === "response_item" && payloadType === "function_call") {
+      const name = getString(payload?.name);
+      if (!name) continue;
+      const callId = getString(payload?.call_id);
+      const argsRaw = getString(payload?.arguments);
+      let parsedArgs: unknown = undefined;
+      if (argsRaw) {
+        try {
+          parsedArgs = JSON.parse(argsRaw);
+        } catch {
+          parsedArgs = { raw: argsRaw };
+        }
+      }
+      markToolCall(name, callId, parsedArgs);
+      continue;
+    }
+
+    if (msg.type === "response_item" && payloadType === "custom_tool_call") {
+      if (!payload) continue;
+      const name = getString(payload?.name);
+      if (!name) continue;
+      const callId = getString(payload?.call_id);
+      const status = getString(payload?.status);
+      markToolCall(name, callId, parseCodexToolInput(payload), status);
+      continue;
+    }
+
+    if (msg.type === "response_item" && payloadType === "web_search_call") {
+      const status = getString(payload?.status);
+      markToolCall("web_search_call", undefined, payload?.action, status);
+      continue;
+    }
+
+    if (
+      msg.type === "response_item" &&
+      (payloadType === "function_call_output" ||
+        payloadType === "custom_tool_call_output")
+    ) {
+      const callId = getString(payload?.call_id);
+      if (!callId) continue;
+      const toolName = toolCallIdToName.get(callId);
+      if (!toolName) continue;
+      const output = payload?.output;
+      if (parseToolOutputError(output)) {
+        ensureTool(toolName).errorCount++;
+      }
+      continue;
+    }
+  }
+
+  const filesRead: FileReadEntry[] = [...filesReadMap.entries()].map(
+    ([path, count]) => ({
+      path,
+      count,
+      category: categorizeFilePath(path),
+    }),
+  );
+  const filesModified: FileWriteEntry[] = [...filesModifiedMap.entries()].map(
+    ([path, count]) => ({
+      path,
+      count,
+      category: categorizeFilePath(path),
+    }),
+  );
+
+  const detectedInstructionPaths: string[] = [];
+  for (const fr of filesRead) {
+    if (fr.category === "knowledge" || fr.category === "instruction") {
+      detectedInstructionPaths.push(fr.path);
+    }
+  }
+
+  const coreTools: Record<string, number> = {};
+  const otherTools: Record<string, number> = {};
+  for (const [name, entry] of Object.entries(toolUsage)) {
+    if (name === "Skill" || name === "Task" || name.startsWith("mcp__"))
+      continue;
+    if (isCoreToolForProvider(name, "codex")) coreTools[name] = entry.count;
+    else otherTools[name] = entry.count;
+  }
+
+  // Token attribution fallback for Codex events where per-call usage is unavailable.
+  const totalToolCalls = Object.values(toolUsage).reduce(
+    (sum, t) => sum + t.count,
+    0,
+  );
+  if (totalToolCalls > 0) {
+    for (const entry of Object.values(toolUsage)) {
+      const share = entry.count / totalToolCalls;
+      entry.inputTokens = Math.round(stats.inputTokens * share);
+      entry.outputTokens = Math.round(stats.outputTokens * share);
+      entry.cacheReadTokens = Math.round(stats.cacheReadTokens * share);
+      entry.cacheWriteTokens = Math.round(stats.cacheWriteTokens * share);
+      entry.totalTokens =
+        entry.inputTokens +
+        entry.outputTokens +
+        entry.cacheReadTokens +
+        entry.cacheWriteTokens;
+      entry.estimatedCost = stats.totalCost * share;
+    }
+  }
+
+  for (const [model, count] of modelMessageCounts.entries()) {
+    ensureModel(model).messageCount = count;
+  }
+
+  for (const entry of Object.values(modelUsage)) {
+    if (entry.messageCount === 0) {
+      entry.messageCount = entry.inputTokens + entry.outputTokens > 0 ? 1 : 0;
+    }
+  }
+
+  const tags: string[] = [];
+  if (agents.length > 0) {
+    const spawnedTypes = new Set(agents.map((a) => a.type));
+    for (const t of spawnedTypes) tags.push(`spawns:${t}`);
+  }
+  for (const s of skills) tags.push(`skill:${s.name}`);
+
+  let avgLatencyMs = 0;
+  let p50LatencyMs = 0;
+  let p95LatencyMs = 0;
+  let maxLatencyMs = 0;
+  if (turnLatencies.length > 0) {
+    turnLatencies.sort((a, b) => a - b);
+    avgLatencyMs =
+      turnLatencies.reduce((sum, v) => sum + v, 0) / turnLatencies.length;
+    p50LatencyMs = turnLatencies[Math.floor(turnLatencies.length * 0.5)] ?? 0;
+    p95LatencyMs =
+      turnLatencies[
+        Math.min(
+          Math.ceil(turnLatencies.length * 0.95) - 1,
+          turnLatencies.length - 1,
+        )
+      ] ?? 0;
+    maxLatencyMs = turnLatencies[turnLatencies.length - 1] ?? 0;
+  }
+
+  const sessionDurationMs =
+    firstMessageTimestamp !== null && lastMessageTimestamp !== null
+      ? lastMessageTimestamp - firstMessageTimestamp
+      : 0;
+
+  stats.toolUsage = toolUsage;
+  stats.modelUsage = modelUsage;
+  stats.enrichedTools = {
+    skills,
+    agents,
+    mcpTools,
+    coreTools,
+    otherTools,
+    filesModified,
+    filesRead,
+    searchedPaths: [...searchedPaths],
+  };
+  stats.detectedInstructionPaths = detectedInstructionPaths;
+  stats.sessionRole = isSubagent ? "subagent" : "standalone";
+  stats.tags = tags;
+  stats.autoSummary = lastAgentMessage || firstUserMessage;
+  stats.avgLatencyMs = avgLatencyMs;
+  stats.p50LatencyMs = p50LatencyMs;
+  stats.p95LatencyMs = p95LatencyMs;
+  stats.maxLatencyMs = maxLatencyMs;
+  stats.sessionDurationMs = Math.max(0, sessionDurationMs);
+  stats.detectedProvider = "codex";
+
+  return stats;
+}

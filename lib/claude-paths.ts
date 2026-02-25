@@ -1,0 +1,20 @@
+import path from "path";
+import os from "os";
+
+export const CLAUDE_DIR = path.join(os.homedir(), ".claude");
+export const PROJECTS_DIR = path.join(CLAUDE_DIR, "projects");
+export const STATS_CACHE = path.join(CLAUDE_DIR, "stats-cache.json");
+export const AGENTS_DIR = path.join(CLAUDE_DIR, "agents");
+export const PLANS_DIR = path.join(CLAUDE_DIR, "plans");
+export const TODOS_DIR = path.join(CLAUDE_DIR, "todos");
+export const TEAMS_DIR = path.join(CLAUDE_DIR, "teams");
+export const TASKS_DIR = path.join(CLAUDE_DIR, "tasks");
+export const SKILLS_DIR = path.join(CLAUDE_DIR, "skills");
+export const LEGACY_SKILLS_DIR = path.join(CLAUDE_DIR, "commands");
+export const SETTINGS_FILE = path.join(CLAUDE_DIR, "settings.json");
+export const PLUGINS_DIR = path.join(CLAUDE_DIR, "plugins");
+export const ARCHIVE_DIR = path.join(CLAUDE_DIR, "archive");
+export const ARCHIVE_SKILLS_DIR = path.join(ARCHIVE_DIR, "skills");
+export const DISABLED_DIR = path.join(CLAUDE_DIR, ".disabled");
+export const DISABLED_AGENTS_DIR = path.join(DISABLED_DIR, "agents");
+export const DISABLED_SKILLS_DIR = path.join(DISABLED_DIR, "skills");
