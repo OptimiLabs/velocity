@@ -36,7 +36,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^1.1.4",
+    "@dagrejs/dagre": "^2.0.4",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
