@@ -88,7 +88,7 @@
     "@types/react-dom": "^19",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
-    "eslint": "^9",
+    "eslint": "^10",
     "eslint-config-next": "16.1.6",
     "happy-dom": "^20.6.1",
     "shadcn": "^3.8.4",
