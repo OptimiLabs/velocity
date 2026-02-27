@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +66,8 @@ interface AgentBuilderChatProps {
   hideScope?: boolean;
   title?: string;
   actionLabel?: string;
+  dialogVariant?: "default" | "workflow-override";
+  contextNote?: string;
 }
 
 /** Strips ```agent-config blocks for display in chat */
@@ -83,6 +85,8 @@ export function AgentBuilderChat({
   hideScope = mode === "edit",
   title,
   actionLabel,
+  dialogVariant = "default",
+  contextNote,
 }: AgentBuilderChatProps) {
   const {
     messages,
@@ -116,6 +120,26 @@ export function AgentBuilderChat({
   const [convertOpen, setConvertOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pluginToolNames = useMemo(
+    () =>
+      new Set(
+        availableTools
+          .filter((tool) => tool.type === "plugin")
+          .map((tool) => tool.name),
+      ),
+    [availableTools],
+  );
+
+  const sanitizeToolList = (tools: unknown): string[] | undefined => {
+    if (!Array.isArray(tools)) return undefined;
+    const next = tools.filter(
+      (tool): tool is string =>
+        typeof tool === "string" &&
+        tool.trim().length > 0 &&
+        !pluginToolNames.has(tool),
+    );
+    return next.length > 0 ? next : undefined;
+  };
 
   // Fetch available tools
   useEffect(() => {
@@ -242,8 +266,20 @@ export function AgentBuilderChat({
       toast.error("Select a project before saving a project-scoped agent");
       return;
     }
+    const hasToolsArray = Array.isArray(currentConfig.tools);
+    const sanitizedTools = hasToolsArray
+      ? sanitizeToolList(currentConfig.tools) ?? []
+      : undefined;
+    const hasDisallowedToolsArray = Array.isArray(currentConfig.disallowedTools);
+    const sanitizedDisallowedTools = hasDisallowedToolsArray
+      ? sanitizeToolList(currentConfig.disallowedTools) ?? []
+      : undefined;
     const payload: Partial<Agent> = {
       ...currentConfig,
+      ...(hasToolsArray ? { tools: sanitizedTools } : {}),
+      ...(hasDisallowedToolsArray
+        ? { disallowedTools: sanitizedDisallowedTools }
+        : {}),
       ...(!hideScope
         ? {
             scope: saveScope,
@@ -266,6 +302,10 @@ export function AgentBuilderChat({
   const displayStreamingText = streamingText
     ? stripConfigBlocks(streamingText)
     : "";
+  const isWorkflowOverrideVariant = dialogVariant === "workflow-override";
+  const dialogContentClass = isWorkflowOverrideVariant
+    ? "w-[98vw] sm:!max-w-7xl h-[86vh] max-h-[900px] flex flex-col p-0 gap-0"
+    : "w-full sm:!max-w-4xl h-[80vh] flex flex-col p-0 gap-0";
 
   const statusTone =
     configStatus === "valid"
@@ -287,102 +327,111 @@ export function AgentBuilderChat({
   return (
     <>
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-4xl h-[80vh] flex flex-col p-0 gap-0">
+      <DialogContent className={dialogContentClass}>
         {/* Header */}
-        <DialogHeader className="px-4 py-3 border-b border-border/50 flex-row items-center justify-between shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <DialogTitle className="text-xs flex items-center gap-1.5">
-              <Sparkles size={12} className="text-chart-4" />
+        <DialogHeader className="px-5 py-3.5 border-b border-border/50 shrink-0 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <DialogTitle className="text-sm font-semibold flex items-center gap-2 min-w-0">
+              <Sparkles size={14} className="text-chart-4" />
               {title ?? (mode === "edit" ? "AI Edit Agent" : "New Agent")}
             </DialogTitle>
             <DialogDescription className="sr-only">
               Chat with AI to iteratively design an agent configuration and save
               the generated agent.
             </DialogDescription>
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span className="uppercase tracking-wider">Provider</span>
-              <select
-                value={selectedProvider}
-                onChange={(e) =>
-                  setSelectedProvider(e.target.value as AgentBuilderChatProvider)
-                }
-                className="h-6 rounded border border-border/50 bg-background px-2 text-[11px] text-foreground"
-                disabled={isStreaming}
-                aria-label="LLM provider"
-              >
-                {providerOptions.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span className="uppercase tracking-wider">Output</span>
-              <ProviderTargetModeSelector
-                value={outputTargetProvider}
-                onChange={setOutputTargetProvider}
-                disabled={isStreaming}
-                includeAll
-                className="h-6 min-w-[120px] text-[11px]"
-                ariaLabel="Agent chat output provider"
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
             <Badge
               variant="outline"
-              className={cn("text-[10px] h-6 px-2 border", statusTone)}
+              className={cn("text-xs h-7 px-2.5 border", statusTone)}
             >
               {statusLabel}
             </Badge>
-            {configStatus === "invalid" && (
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="uppercase tracking-wider">Provider</span>
+                <select
+                  value={selectedProvider}
+                  onChange={(e) =>
+                    setSelectedProvider(e.target.value as AgentBuilderChatProvider)
+                  }
+                  className="h-7 rounded border border-border/50 bg-background px-2.5 text-xs text-foreground"
+                  disabled={isStreaming}
+                  aria-label="LLM provider"
+                >
+                  {providerOptions.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="uppercase tracking-wider">Output</span>
+                <ProviderTargetModeSelector
+                  value={outputTargetProvider}
+                  onChange={setOutputTargetProvider}
+                  disabled={isStreaming}
+                  includeAll
+                  className="h-7 min-w-[140px] text-xs"
+                  ariaLabel="Agent chat output provider"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {configStatus === "invalid" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => {
+                    if (!repairConfig()) {
+                      toast.error("Unable to repair config from the last response");
+                    } else {
+                      toast.success("Applied best-effort config repair");
+                    }
+                  }}
+                  disabled={isStreaming}
+                >
+                  Apply Repair
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 text-xs"
+                className="h-8 text-xs"
                 onClick={() => {
-                  if (!repairConfig()) {
-                    toast.error("Unable to repair config from the last response");
-                  } else {
-                    toast.success("Applied best-effort config repair");
+                  if (!canCreate) return;
+                  setConvertOpen(true);
+                  if (outputTargetProvider !== "claude") {
+                    toast.success("Provider conversion outputs are ready");
                   }
                 }}
-                disabled={isStreaming}
+                disabled={!canCreate || isStreaming}
               >
-                Apply Repair
+                Convert
               </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={() => {
-                if (!canCreate) return;
-                setConvertOpen(true);
-                if (outputTargetProvider !== "claude") {
-                  toast.success("Provider conversion outputs are ready");
-                }
-              }}
-              disabled={!canCreate || isStreaming}
-            >
-              Convert
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 text-xs"
-              onClick={handleCreate}
-              disabled={!canCreate || isStreaming}
-            >
-              {primaryActionLabel}
-            </Button>
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                onClick={handleCreate}
+                disabled={!canCreate || isStreaming}
+              >
+                {primaryActionLabel}
+              </Button>
+            </div>
           </div>
+          {contextNote && (
+            <p className="rounded-md border border-border/50 bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
+              {contextNote}
+            </p>
+          )}
         </DialogHeader>
 
         {/* Two-column layout */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
           {/* Left: Chat (55%) */}
-          <div className="w-[55%] flex flex-col border-r border-border/50">
+          <div className="flex min-h-0 flex-1 flex-col border-b border-border/50 lg:w-[56%] lg:border-b-0 lg:border-r lg:border-border/50">
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {messages.length === 0 && !isStreaming && (
@@ -465,7 +514,7 @@ export function AgentBuilderChat({
           </div>
 
           {/* Right: Config Panel (45%) */}
-          <div className="w-[45%] overflow-y-auto p-3 bg-muted/20">
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 bg-muted/20 lg:w-[44%]">
             {(configErrors.length > 0 || configWarnings.length > 0 || repairNotes.length > 0) && (
               <div className="mb-3 space-y-2 rounded-md border border-border/50 bg-background/80 p-2.5">
                 {configErrors.length > 0 && (
@@ -607,20 +656,36 @@ export function AgentBuilderChat({
         currentConfig.name && currentConfig.prompt
           ? {
               kind: "inline" as const,
-              data: {
-                ...(currentConfig as Record<string, unknown>),
-                ...(!hideScope
-                  ? {
-                      scope: saveScope,
-                      projectPath:
-                        saveScope === "project" ? saveProjectPath : undefined,
-                      areaPath:
-                        saveScope === "project" && saveAreaPath.trim()
-                          ? saveAreaPath.trim()
-                          : undefined,
-                    }
-                  : {}),
-              },
+              data: (() => {
+                const hasToolsArray = Array.isArray(currentConfig.tools);
+                const sanitizedTools = hasToolsArray
+                  ? sanitizeToolList(currentConfig.tools) ?? []
+                  : undefined;
+                const hasDisallowedToolsArray = Array.isArray(
+                  currentConfig.disallowedTools,
+                );
+                const sanitizedDisallowedTools = hasDisallowedToolsArray
+                  ? sanitizeToolList(currentConfig.disallowedTools) ?? []
+                  : undefined;
+                return {
+                  ...(currentConfig as Record<string, unknown>),
+                  ...(hasToolsArray ? { tools: sanitizedTools } : {}),
+                  ...(hasDisallowedToolsArray
+                    ? { disallowedTools: sanitizedDisallowedTools }
+                    : {}),
+                  ...(!hideScope
+                    ? {
+                        scope: saveScope,
+                        projectPath:
+                          saveScope === "project" ? saveProjectPath : undefined,
+                        areaPath:
+                          saveScope === "project" && saveAreaPath.trim()
+                            ? saveAreaPath.trim()
+                            : undefined,
+                      }
+                    : {}),
+                };
+              })(),
             }
           : null
       }

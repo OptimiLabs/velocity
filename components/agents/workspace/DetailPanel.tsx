@@ -30,7 +30,7 @@ interface DetailPanelProps {
   onDeployWorkflowAsCommand?: (workflowId: string) => void;
   onEditActivationContext?: (workflowId: string) => void;
   workspaceAgentNames?: Set<string>;
-  onRemoveFromWorkspace?: (name: string) => void;
+  onRemoveFromWorkspace?: (target: string) => void;
   onAddToWorkspace?: (name: string) => void;
   onRenameWorkflow?: (id: string, name: string) => void;
   width?: number;
@@ -39,6 +39,7 @@ interface DetailPanelProps {
   activeWorkflow?: Workflow | null;
   onSaveWorkflowOverrides?: (nodeId: string, overrides: WorkflowNodeOverrides) => void;
   onPromoteAgent?: (name: string) => void;
+  compactWorkflowAgentActions?: boolean;
 }
 
 export function DetailPanel({
@@ -68,6 +69,7 @@ export function DetailPanel({
   activeWorkflow,
   onSaveWorkflowOverrides,
   onPromoteAgent,
+  compactWorkflowAgentActions = true,
 }: DetailPanelProps) {
   const detailMode = useWorkspaceStore((s) => s.detailMode);
   const setDetailMode = useWorkspaceStore((s) => s.setDetailMode);
@@ -162,14 +164,20 @@ export function DetailPanel({
                     onRePull={onRePullAgent}
                     inWorkspace={workspaceAgentNames?.has(selectedAgent.name)}
                     onRemoveFromWorkspace={() => {
-                      onRemoveFromWorkspace?.(selectedAgent.name);
+                      const removalTarget =
+                        workflowMode && selection?.type === "agent"
+                          ? selection.id
+                          : selectedAgent.name;
+                      onRemoveFromWorkspace?.(removalTarget);
                       onClose();
                     }}
                     onAddToWorkspace={() =>
                       onAddToWorkspace?.(selectedAgent.name)
                     }
                     hideDelete={workflowMode}
-                    compactForWorkflow={workflowMode}
+                    compactForWorkflow={
+                      workflowMode ? compactWorkflowAgentActions : false
+                    }
                     workflowOverrides={viewWorkflowNode?.overrides}
                     onPromote={
                       selectedAgent.scope === "workflow" && onPromoteAgent

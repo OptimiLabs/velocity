@@ -15,6 +15,7 @@ import { TilingPane } from "./TilingPane";
 import { TabDropOverlay, getEdgeZone, type DropZone } from "./TabDropOverlay";
 import { TabbedModeContent } from "./TabbedModeContent";
 import { resolveActivePane } from "@/lib/console/resolve-active-pane";
+import { resolveConsoleCwd } from "@/lib/console/cwd";
 import {
   collectLeaves,
   defaultLayout,
@@ -44,6 +45,7 @@ interface ConsoleLayoutProps {
   groupTerminals?: Record<string, TerminalMeta>;
   groupActivePaneId?: PaneId | null;
   groupFocusedPaneId?: PaneId | null;
+  groupActiveSessionId?: string | null;
 }
 
 export const ConsoleLayout = memo(function ConsoleLayout({
@@ -55,6 +57,7 @@ export const ConsoleLayout = memo(function ConsoleLayout({
   groupTerminals,
   groupActivePaneId,
   groupFocusedPaneId,
+  groupActiveSessionId,
 }: ConsoleLayoutProps) {
   // Derive connection state
   const connected = useMemo(
@@ -70,6 +73,8 @@ export const ConsoleLayout = memo(function ConsoleLayout({
     addTerminal,
     removeTerminal,
     updateTerminalMeta,
+    tabbedSidePanel,
+    setTabbedSidePanel,
     activeSessionId,
     setActivePaneIdForSync,
     storeActiveGroupId,
@@ -87,6 +92,8 @@ export const ConsoleLayout = memo(function ConsoleLayout({
         addTerminal: s.addTerminal,
         removeTerminal: s.removeTerminal,
         updateTerminalMeta: s.updateTerminalMeta,
+        tabbedSidePanel: s.tabbedSidePanel,
+        setTabbedSidePanel: s.setTabbedSidePanel,
         activeSessionId: s.activeSessionId,
         setActivePaneIdForSync: s.setActivePaneId,
         storeActiveGroupId: s.activeGroupId,
@@ -103,39 +110,13 @@ export const ConsoleLayout = memo(function ConsoleLayout({
   const activePaneId =
     groupActivePaneId !== undefined ? groupActivePaneId : storeActivePaneId;
   const terminals = groupTerminals ?? storeTerminals ?? {};
+  const effectiveActiveSessionId =
+    groupActiveSessionId !== undefined
+      ? groupActiveSessionId
+      : activeSessionId ?? session?.id ?? null;
 
   const [dropZone, setDropZone] = useState<DropZone>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-
-  const handleCreateTerminal = useCallback(() => {
-    if (!session?.id) {
-      toast.error("Select or create a session first.");
-      return;
-    }
-    const activeLeaf = activePaneId ? findNode(paneTree, activePaneId) : null;
-    const activeTermId =
-      activeLeaf?.kind === "leaf" && activeLeaf.content.type === "terminal"
-        ? activeLeaf.content.terminalId
-        : null;
-    const activeCwd = activeTermId ? terminals[activeTermId]?.cwd : null;
-    addTerminal(
-      {
-        cwd: activeCwd || session?.cwd || "~",
-        sessionId: session.id,
-      },
-      undefined,
-      groupId,
-    );
-  }, [
-    addTerminal,
-    paneTree,
-    activePaneId,
-    terminals,
-    session?.cwd,
-    session?.id,
-    session,
-    groupId,
-  ]);
 
   const handleRemoveTerminal = useCallback(
     (terminalId: string) => {
@@ -228,7 +209,7 @@ export const ConsoleLayout = memo(function ConsoleLayout({
 
   // Session-filtered leaves for resolveActivePane (active session only)
   const activeSessionTerminalLeaves = useMemo(() => {
-    const effectiveSessionId = activeSessionId ?? session?.id;
+    const effectiveSessionId = effectiveActiveSessionId;
     if (!effectiveSessionId) return allTerminalLeaves;
     return allTerminalLeaves.filter((leaf) => {
       if (leaf.content.type !== "terminal") return false;
@@ -236,7 +217,7 @@ export const ConsoleLayout = memo(function ConsoleLayout({
       if (!meta?.sessionId) return true; // Keep terminals without a session (legacy)
       return meta.sessionId === effectiveSessionId;
     });
-  }, [allTerminalLeaves, terminals, session?.id, activeSessionId]);
+  }, [allTerminalLeaves, terminals, effectiveActiveSessionId]);
 
   // Leaves for rendering — includes all visited sessions (prevents unmount/remount)
   const mountedTerminalLeaves = useMemo(() => {
@@ -249,13 +230,14 @@ export const ConsoleLayout = memo(function ConsoleLayout({
     });
   }, [allTerminalLeaves, terminals, mountedSessionIds]);
   const settingsLeafExists = useMemo(
-    () => leaves.some((l) => l.content.type === "settings"),
-    [leaves],
+    () =>
+      layoutMode === "tiling" &&
+      leaves.some((l) => l.content.type === "settings"),
+    [layoutMode, leaves],
   );
-  const contextLeafExists = useMemo(
-    () => leaves.some((l) => l.content.type === "context"),
-    [leaves],
-  );
+  const contextLeafExists = false;
+  const safeTabbedSidePanel =
+    tabbedSidePanel === "settings" ? "settings" : undefined;
 
   // Single source of truth for which pane is visible
   const visibility = useMemo(
@@ -266,17 +248,55 @@ export const ConsoleLayout = memo(function ConsoleLayout({
         terminalLeaves: activeSessionTerminalLeaves,
         settingsLeafExists,
         contextLeafExists,
-        activeSessionId,
+        activeSessionId: effectiveActiveSessionId,
       }),
     [
       activePaneId,
       paneTree,
       activeSessionTerminalLeaves,
       settingsLeafExists,
-      contextLeafExists,
-      activeSessionId,
+      effectiveActiveSessionId,
     ],
   );
+
+  const handleCreateTerminal = useCallback(() => {
+    if (!session?.id) {
+      toast.error("Select or create a session first.");
+      return;
+    }
+
+    const activeLeaf = activePaneId ? findNode(paneTree, activePaneId) : null;
+    let inheritedCwd: string | null = null;
+
+    if (activeLeaf?.kind === "leaf" && activeLeaf.content.type === "terminal") {
+      const activeMeta = terminals[activeLeaf.content.terminalId];
+      if (!activeMeta?.sessionId || activeMeta.sessionId === session.id) {
+        inheritedCwd = activeMeta?.cwd ?? null;
+      }
+    }
+
+    if (!inheritedCwd) {
+      const firstSessionLeaf = collectLeaves(paneTree).find((leaf) => {
+        if (leaf.content.type !== "terminal") return false;
+        const meta = terminals[leaf.content.terminalId];
+        if (!meta?.sessionId) return true;
+        return meta.sessionId === session.id;
+      });
+      if (firstSessionLeaf?.content.type === "terminal") {
+        inheritedCwd =
+          terminals[firstSessionLeaf.content.terminalId]?.cwd ?? null;
+      }
+    }
+
+    addTerminal(
+      {
+        cwd: resolveConsoleCwd(inheritedCwd, session.cwd),
+        sessionId: session.id,
+      },
+      undefined,
+      groupId,
+    );
+  }, [addTerminal, activePaneId, groupId, paneTree, session, terminals]);
 
   // Sync store's activePaneId when resolveActivePane redirects (tabbed mode only)
   // Bug fix: only sync for the active group — non-active group ConsoleLayout
@@ -316,7 +336,7 @@ export const ConsoleLayout = memo(function ConsoleLayout({
       )}
       <LayoutToolbar
         groupId={groupId}
-        activeSessionId={activeSessionId ?? session?.id}
+        activeSessionId={effectiveActiveSessionId}
         onCreateTerminal={handleCreateTerminal}
         onRemoveTerminal={handleRemoveTerminal}
       />
@@ -334,10 +354,11 @@ export const ConsoleLayout = memo(function ConsoleLayout({
             wsRef={wsRef}
             wsVersion={wsVersion}
             isOnly={paneTree.kind === "leaf"}
+            onCreateTerminal={handleCreateTerminal}
             groupTerminals={groupTerminals}
             groupActivePaneId={groupActivePaneId}
             groupFocusedPaneId={groupFocusedPaneId}
-            groupActiveSessionId={activeSessionId ?? session?.id}
+            groupActiveSessionId={effectiveActiveSessionId}
           />
         ) : (
           <TabbedModeContent
@@ -345,12 +366,12 @@ export const ConsoleLayout = memo(function ConsoleLayout({
             session={session}
             terminalLeaves={mountedTerminalLeaves}
             terminals={terminals}
-            settingsLeafExists={settingsLeafExists}
-            contextLeafExists={contextLeafExists}
+            tabbedSidePanel={safeTabbedSidePanel}
             wsRef={wsRef}
             wsVersion={wsVersion}
             onCreateTerminal={handleCreateTerminal}
             onUpdateTerminalMeta={updateTerminalMeta}
+            onSetTabbedSidePanel={setTabbedSidePanel}
             groupId={groupId}
           />
         )}

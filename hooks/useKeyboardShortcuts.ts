@@ -1,20 +1,27 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import { collectLeafIds, findNode } from "@/lib/console/pane-tree";
+import { resolveConsoleCwd } from "@/lib/console/cwd";
+import { isMacClient } from "@/lib/platform/client";
 import { toast } from "sonner";
 
 export function useKeyboardShortcuts() {
   const router = useRouter();
   const pathname = usePathname();
+  const leaderUntilRef = useRef(0);
 
   useEffect(() => {
+    const isMac = isMacClient();
+
     const handler = (e: KeyboardEvent) => {
+      const code = e.code;
+
       // Shift+1..9 — focus pane by index (on console page, tiling mode)
       if (e.shiftKey && !e.metaKey && !e.ctrlKey && pathname === "/") {
-        const digitMatch = e.code.match(/^Digit([1-9])$/);
+        const digitMatch = code.match(/^Digit([1-9])$/);
         if (digitMatch) {
           const store = useConsoleLayoutStore.getState();
           if (store.layoutMode === "tiling") {
@@ -29,13 +36,79 @@ export function useKeyboardShortcuts() {
         }
       }
 
-      // Only handle Cmd/Ctrl shortcuts
-      if (!(e.metaKey || e.ctrlKey)) return;
+      const hasAppModifier = isMac
+        ? e.altKey && !e.metaKey && !e.ctrlKey
+        : e.ctrlKey;
+      const target = e.target as HTMLElement | null;
+      const isEditableTarget =
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT");
+
+      const isBareLeaderPress =
+        code === "Semicolon" && !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (isBareLeaderPress && !isEditableTarget) {
+        e.preventDefault();
+        leaderUntilRef.current = Date.now() + 2000;
+        return;
+      }
+
+      const leaderActive = Date.now() <= leaderUntilRef.current;
+      if (leaderActive && pathname !== "/") {
+        const leaderDigitMatch = code.match(/^Digit([1-9])$/);
+        if (leaderDigitMatch) {
+          e.preventDefault();
+          leaderUntilRef.current = 0;
+          const digit = leaderDigitMatch[1];
+          switch (digit) {
+            case "1":
+              router.push("/");
+              break;
+            case "2":
+              router.push("/sessions");
+              break;
+            case "3":
+              router.push("/usage");
+              break;
+            case "4":
+              router.push("/analytics");
+              break;
+            case "5":
+              router.push("/routing");
+              break;
+            case "6":
+              router.push("/agents");
+              break;
+            case "7":
+              router.push("/routing");
+              break;
+            case "8":
+              router.push("/plugins");
+              break;
+            case "9":
+              router.push("/settings");
+              break;
+          }
+          return;
+        }
+        if (code === "Escape") {
+          leaderUntilRef.current = 0;
+          return;
+        }
+      }
+
+      // Avoid stealing Option-based character entry when typing in form fields.
+      if (isMac && e.altKey && isEditableTarget) return;
 
       // On the console page (home), number keys are used for session switching
       if (pathname === "/") {
-        // Cmd+Shift+M — collapse tiling back to tabbed
-        if ((e.key === "m" || e.key === "M") && e.shiftKey) {
+        // Console controls: Option on Mac, Ctrl on non-Mac.
+        if (!hasAppModifier) return;
+
+        // Mod+Shift+M — collapse tiling back to tabbed
+        if (code === "KeyM" && e.shiftKey) {
           e.preventDefault();
           const store = useConsoleLayoutStore.getState();
           if (store.layoutMode === "tiling") {
@@ -44,23 +117,23 @@ export function useKeyboardShortcuts() {
           return;
         }
 
-        // Cmd+Shift+V — toggle paste history
-        if ((e.key === "v" || e.key === "V") && e.shiftKey) {
+        // Mod+Shift+V — toggle paste history
+        if (code === "KeyV" && e.shiftKey) {
           e.preventDefault();
           const store = useConsoleLayoutStore.getState();
           store.setPasteHistoryOpen(!store.pasteHistoryOpen);
           return;
         }
 
-        // Cmd+Shift+Enter — maximize/restore focused pane
-        if (e.key === "Enter" && e.shiftKey) {
+        // Mod+Shift+Enter — maximize/restore focused pane
+        if (code === "Enter" && e.shiftKey) {
           e.preventDefault();
           useConsoleLayoutStore.getState().toggleMaximizedPane();
           return;
         }
 
-        // Cmd+[ / Cmd+] — cycle through panes
-        if (e.key === "[" || e.key === "]") {
+        // Mod+[ / Mod+] — cycle through panes
+        if (code === "BracketLeft" || code === "BracketRight") {
           e.preventDefault();
           const store = useConsoleLayoutStore.getState();
           const leaves = collectLeafIds(store.paneTree);
@@ -68,7 +141,7 @@ export function useKeyboardShortcuts() {
 
           const currentIdx = leaves.indexOf(store.activePaneId ?? "");
           let nextIdx: number;
-          if (e.key === "]") {
+          if (code === "BracketRight") {
             nextIdx = (currentIdx + 1) % leaves.length;
           } else {
             nextIdx = (currentIdx - 1 + leaves.length) % leaves.length;
@@ -80,8 +153,8 @@ export function useKeyboardShortcuts() {
           return;
         }
 
-        // iTerm-like split shortcuts — Cmd+D horizontal, Cmd+Shift+D vertical
-        if (e.key === "d" || e.key === "D") {
+        // iTerm-like split shortcuts — Mod+D horizontal, Mod+Shift+D vertical
+        if (code === "KeyD") {
           e.preventDefault();
           const store = useConsoleLayoutStore.getState();
           if (!store.activeSessionId) {
@@ -108,7 +181,7 @@ export function useKeyboardShortcuts() {
 
           store.addTerminal(
             {
-              cwd: cwd || "~",
+              cwd: resolveConsoleCwd(cwd),
               sessionId: store.activeSessionId,
             },
             orientation as "h" | "v",
@@ -118,47 +191,48 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      switch (e.key) {
+      // Route navigation:
+      // - Mac: Option to avoid browser-reserved Cmd shortcuts.
+      // - Non-Mac: Ctrl.
+      if (!hasAppModifier) return;
+
+      const digitMatch = code.match(/^Digit([1-9])$/);
+      if (!digitMatch) return;
+      const digit = digitMatch[1];
+
+      e.preventDefault();
+      switch (digit) {
         case "1":
-          e.preventDefault();
           router.push("/");
           break;
         case "2":
-          e.preventDefault();
           router.push("/sessions");
           break;
         case "3":
-          e.preventDefault();
           router.push("/usage");
           break;
         case "4":
-          e.preventDefault();
           router.push("/analytics");
           break;
         case "5":
-          e.preventDefault();
           router.push("/routing");
           break;
         case "6":
-          e.preventDefault();
           router.push("/agents");
           break;
         case "7":
-          e.preventDefault();
           router.push("/routing");
           break;
         case "8":
-          e.preventDefault();
           router.push("/plugins");
           break;
         case "9":
-          e.preventDefault();
           router.push("/settings");
           break;
       }
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, [router, pathname]);
 }

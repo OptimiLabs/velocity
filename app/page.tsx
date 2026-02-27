@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useConsole } from "@/components/providers/ConsoleProvider";
 import { useAgentLaunch } from "@/hooks/useAgentLaunch";
 import { useConsoleLauncher } from "@/hooks/useConsoleLauncher";
@@ -20,6 +20,9 @@ import { useShallow } from "zustand/react/shallow";
 import { clearTerminalBuffer } from "@/lib/console/terminal-registry";
 import { clearSerializedBuffer, clearPromptTracker } from "@/lib/console/terminal-cache";
 import { deleteScrollback } from "@/lib/console/terminal-db";
+import { isMacClient } from "@/lib/platform/client";
+import { useConsoleViewStore } from "@/stores/consoleViewStore";
+import { Minimize2 } from "lucide-react";
 
 export default function ConsolePage() {
   const {
@@ -49,6 +52,10 @@ export default function ConsolePage() {
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
+  const leaderUntilRef = useRef(0);
+  const isFullscreen = useConsoleViewStore((s) => s.isFullscreen);
+  const toggleFullscreen = useConsoleViewStore((s) => s.toggleFullscreen);
+  const setFullscreen = useConsoleViewStore((s) => s.setFullscreen);
 
   // Auto-archive idle sessions
   useAutoArchive();
@@ -91,12 +98,26 @@ export default function ConsolePage() {
     return map;
   }, [sessions]);
 
+  const scopedPinnedSessionIds = useMemo(() => {
+    if (!activeGroupId) return pinnedSessionIds;
+    return pinnedSessionIds.filter((id) => {
+      const session = sessions.get(id);
+      return session?.groupId === activeGroupId;
+    });
+  }, [activeGroupId, pinnedSessionIds, sessions]);
+
   // Extracted hooks
   useAgentLaunch(createSession);
   const { pickerOpen, setPickerOpen, launchAgent, launchWorkflow } =
     useConsoleLauncher(createSession, wsRef);
   const { sidebarWidth, sidebarCollapsed, handleDragStart, toggleCollapse } =
-    useSidebarResize();
+    useSidebarResize({
+      storageKey: "console-sidebar-width",
+      minWidth: 176,
+      defaultWidth: 220,
+      maxWidth: 320,
+      collapsedWidth: 48,
+    });
 
   // Create new workspace session (group + shell terminal session)
   const handleCreateSession = useCallback(() => {
@@ -189,25 +210,100 @@ export default function ConsolePage() {
 
   // Keyboard shortcuts
   useEffect(() => {
+    const isMac = isMacClient();
+
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
+      const code = e.code;
+      const activeElement = document.activeElement as HTMLElement | null;
+      const tag = activeElement?.tagName;
+      const isInputFocused =
+        activeElement?.isContentEditable === true ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT";
 
-      const tag = (document.activeElement as HTMLElement)?.tagName;
-      const isInputFocused = tag === "INPUT" || tag === "TEXTAREA";
+      const isBareLeaderPress =
+        code === "Semicolon" && !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (isBareLeaderPress && !isInputFocused) {
+        e.preventDefault();
+        leaderUntilRef.current = Date.now() + 2000;
+        return;
+      }
 
-      if (e.key === "k" && !e.shiftKey) {
+      const leaderActive = Date.now() <= leaderUntilRef.current;
+      if (leaderActive) {
+        if (code === "Escape") {
+          leaderUntilRef.current = 0;
+          return;
+        }
+
+        if (!isInputFocused && code === "KeyK" && !e.shiftKey) {
+          e.preventDefault();
+          leaderUntilRef.current = 0;
+          setPaletteOpen((prev) => !prev);
+          return;
+        }
+
+        if (!isInputFocused && code === "KeyN" && !e.shiftKey) {
+          e.preventDefault();
+          leaderUntilRef.current = 0;
+          handleCreateSession();
+          return;
+        }
+
+        if (!isInputFocused && (code === "BracketLeft" || code === "BracketRight")) {
+          e.preventDefault();
+          leaderUntilRef.current = 0;
+          if (!activeId || sessionList.length < 2) return;
+          const idx = sessionList.findIndex((s) => s.id === activeId);
+          if (idx < 0) return;
+          if (code === "BracketRight") {
+            const next = idx < sessionList.length - 1 ? idx + 1 : 0;
+            handleSelectSession(sessionList[next].id);
+          } else {
+            const prev = idx > 0 ? idx - 1 : sessionList.length - 1;
+            handleSelectSession(sessionList[prev].id);
+          }
+          return;
+        }
+
+        if (!isInputFocused) {
+          const leaderDigitMatch = code.match(/^Digit([1-9])$/);
+          if (leaderDigitMatch) {
+            e.preventDefault();
+            leaderUntilRef.current = 0;
+            const num = parseInt(leaderDigitMatch[1], 10);
+            const store = useConsoleLayoutStore.getState();
+            const targetGroupId = store.groupOrder[num - 1];
+            if (targetGroupId && store.groups[targetGroupId]) {
+              switchGroup(targetGroupId);
+            }
+            return;
+          }
+        }
+      }
+
+      const hasAppModifier = isMac
+        ? e.altKey && !e.metaKey && !e.ctrlKey
+        : e.ctrlKey;
+      if (!hasAppModifier) return;
+
+      // Let Option-key text entry pass through while typing.
+      if (isMac && e.altKey && isInputFocused) return;
+
+      if (code === "KeyK" && !e.shiftKey) {
         e.preventDefault();
         setPaletteOpen((prev) => !prev);
         return;
       }
 
-      if (e.key === "n" && !e.shiftKey) {
+      if (code === "KeyN" && !e.shiftKey) {
         e.preventDefault();
         handleCreateSession();
         return;
       }
 
-      if (e.key === "t" && !e.shiftKey) {
+      if (code === "KeyT" && !e.shiftKey) {
         e.preventDefault();
         if (!activeId) {
           toast.error("Select or create a session first.");
@@ -231,7 +327,7 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.key === "t" && e.shiftKey) {
+      if (code === "KeyT" && e.shiftKey) {
         e.preventDefault();
         if (pinnedSessionIds.length > 0) {
           for (const id of pinnedSessionIds) unpinSession(id);
@@ -241,13 +337,13 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.key === "\\") {
+      if (code === "Backslash") {
         e.preventDefault();
         setLayoutMode(layoutMode === "tabbed" ? "tiling" : "tabbed");
         return;
       }
 
-      if (e.key === "w" && !e.shiftKey) {
+      if (code === "KeyW" && !e.shiftKey) {
         e.preventDefault();
         const store = useConsoleLayoutStore.getState();
         const leaf = store.activePaneId
@@ -274,7 +370,7 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.key === "l" && e.shiftKey && activeId) {
+      if (code === "KeyL" && e.shiftKey && activeId) {
         e.preventDefault();
         const labelEl = document.querySelector("[data-session-label]");
         if (labelEl instanceof HTMLElement) {
@@ -285,7 +381,7 @@ export default function ConsolePage() {
 
       if (isInputFocused) return;
 
-      if (e.shiftKey && (e.key === "[" || e.key === "{")) {
+      if (code === "BracketLeft" && e.shiftKey) {
         e.preventDefault();
         const store = useConsoleLayoutStore.getState();
         const leaves = collectLeaves(store.paneTree);
@@ -296,7 +392,7 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.shiftKey && (e.key === "]" || e.key === "}")) {
+      if (code === "BracketRight" && e.shiftKey) {
         e.preventDefault();
         const store = useConsoleLayoutStore.getState();
         const leaves = collectLeaves(store.paneTree);
@@ -307,10 +403,11 @@ export default function ConsolePage() {
         return;
       }
 
-      // ⌘1-9 switches group (unified: store + session group)
-      const num = parseInt(e.key);
-      if (num >= 1 && num <= 9) {
+      // Group switch by number: Option+1..9 on Mac, Ctrl+1..9 on non-Mac.
+      const digitMatch = code.match(/^Digit([1-9])$/);
+      if (digitMatch) {
         e.preventDefault();
+        const num = parseInt(digitMatch[1], 10);
         const store = useConsoleLayoutStore.getState();
         const targetGroupId = store.groupOrder[num - 1];
         if (targetGroupId && store.groups[targetGroupId]) {
@@ -319,7 +416,7 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.key === "[") {
+      if (code === "BracketLeft") {
         e.preventDefault();
         if (!activeId || sessionList.length < 2) return;
         const idx = sessionList.findIndex((s) => s.id === activeId);
@@ -328,7 +425,7 @@ export default function ConsolePage() {
         return;
       }
 
-      if (e.key === "]") {
+      if (code === "BracketRight") {
         e.preventDefault();
         if (!activeId || sessionList.length < 2) return;
         const idx = sessionList.findIndex((s) => s.id === activeId);
@@ -357,6 +454,18 @@ export default function ConsolePage() {
     handleCreateSession,
   ]);
 
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isFullscreen, setFullscreen]);
+
   // Find the session for a given group (most recent session in that group)
   const getGroupSession = useCallback(
     (groupId: string) => latestSessionByGroup.get(groupId) ?? null,
@@ -365,11 +474,24 @@ export default function ConsolePage() {
 
   return (
     <div className="absolute inset-0 overflow-hidden">
+      {isFullscreen && (
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          className="absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-card/90 px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm backdrop-blur-sm hover:bg-card"
+          title="Exit fullscreen"
+          aria-label="Exit fullscreen"
+        >
+          <Minimize2 size={12} />
+          Exit fullscreen
+        </button>
+      )}
       <div
         className="h-full grid"
         style={{ gridTemplateColumns: `${sidebarWidth}px 4px 1fr` }}
       >
         <ConsoleSidebar
+          width={sidebarWidth}
           sessions={sessionList}
           activeId={activeId}
           onSelectSession={handleSelectSession}
@@ -390,6 +512,8 @@ export default function ConsolePage() {
           onOpenArchive={() => setArchiveModalOpen(true)}
           collapsed={sidebarCollapsed}
           onToggleCollapse={toggleCollapse}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
         />
         {/* Drag handle */}
         <div
@@ -397,11 +521,11 @@ export default function ConsolePage() {
           onMouseDown={handleDragStart}
         />
         <div className="relative flex flex-col h-full overflow-hidden">
-          {pinnedSessionIds.length >= 2 ? (
+          {scopedPinnedSessionIds.length >= 2 ? (
             <ErrorBoundary>
               <MultiSessionTiling
                 sessions={sessions}
-                pinnedIds={pinnedSessionIds}
+                pinnedIds={scopedPinnedSessionIds}
                 wsRef={wsRef}
                 wsVersion={wsVersion}
                 renameSession={renameSession}
@@ -438,6 +562,7 @@ export default function ConsolePage() {
                       groupTerminals={groupState.terminals}
                       groupActivePaneId={groupState.activePaneId}
                       groupFocusedPaneId={groupState.focusedPaneId}
+                      groupActiveSessionId={session?.id ?? null}
                     />
                   </ErrorBoundary>
                 </div>

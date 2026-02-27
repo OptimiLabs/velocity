@@ -371,4 +371,84 @@ describe("parseGeminiSession", () => {
     expect(stats.autoSummary).toContain("gemini help");
     expect(stats.autoSummary).not.toContain("gemini --help");
   });
+
+  it("reads project path marker and git branch metadata", () => {
+    const hashDir = path.join(tmpDir, "hash-project-a");
+    const chatsDir = path.join(hashDir, "chats");
+    fs.mkdirSync(chatsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hashDir, ".project_root"),
+      "/Users/test/workspace/project-a",
+      "utf-8",
+    );
+    const filePath = path.join(chatsDir, "session-meta.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        git: { branch: "feature/gemini-metadata" },
+        messages: [
+          { type: "user", content: "hello" },
+          { type: "gemini", model: "gemini-2.5-pro", content: "hi" },
+        ],
+      }),
+      "utf-8",
+    );
+
+    const stats = parseGeminiSession(filePath);
+
+    expect(stats.projectPath).toBe("/Users/test/workspace/project-a");
+    expect(stats.gitBranch).toBe("feature/gemini-metadata");
+  });
+
+  it("captures reasoning token snapshots and effort mode", () => {
+    const filePath = writeSession("reasoning-effort.json", {
+      messages: [
+        { type: "user", content: "think deeply" },
+        {
+          type: "gemini",
+          model: "gemini-2.5-pro",
+          metadata: { reasoning_effort: "high" },
+          content: "done",
+          tokens: {
+            input: 120,
+            thoughts: 40,
+            tool: 10,
+          },
+        },
+      ],
+    });
+
+    const stats = parseGeminiSession(filePath);
+
+    expect(stats.outputTokens).toBe(40);
+    expect(stats.modelUsage["gemini-2.5-pro"].reasoningTokens).toBe(40);
+    expect(stats.effortMode).toBe("high");
+    expect(stats.thinkingBlocks).toBeGreaterThan(0);
+  });
+
+  it("marks tool calls as failed when result payload indicates an error", () => {
+    const filePath = writeSession("tool-result-error.json", {
+      messages: [
+        { type: "user", content: "read config" },
+        {
+          type: "gemini",
+          model: "gemini-2.5-pro",
+          content: "attempting",
+          toolCalls: [
+            {
+              name: "read_file",
+              status: "success",
+              result: { status: "failed", error: "permission denied" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const stats = parseGeminiSession(filePath);
+
+    expect(stats.toolUsage["read_file"]).toBeDefined();
+    expect(stats.toolUsage["read_file"].count).toBe(1);
+    expect(stats.toolUsage["read_file"].errorCount).toBe(1);
+  });
 });

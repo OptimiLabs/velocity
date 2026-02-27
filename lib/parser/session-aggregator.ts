@@ -46,6 +46,9 @@ export interface SessionStats {
   unpricedMessages: number;
   detectedProvider: ConfigProvider;
   effortMode: string | null;
+  firstPrompt?: string | null;
+  gitBranch?: string | null;
+  projectPath?: string | null;
 }
 
 const SUMMARY_HEAD = 5;
@@ -88,6 +91,12 @@ function normalizeEffortMode(value: unknown): string | null {
   if (!normalized) return null;
   if (!/^[a-z0-9_-]{2,24}$/.test(normalized)) return null;
   return normalized;
+}
+
+function getStringValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function extractEffortModeFromRecord(
@@ -136,6 +145,105 @@ function extractEffortModeFromRecord(
   }
 
   return null;
+}
+
+function extractGitBranchFromRecord(
+  root: Record<string, unknown>,
+): string | null {
+  const queue: Record<string, unknown>[] = [root];
+  const seen = new Set<Record<string, unknown>>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    const branch =
+      getStringValue(current.git_branch) ??
+      getStringValue(current.gitBranch) ??
+      (asRecord(current.git) ? getStringValue(asRecord(current.git)?.branch) : null);
+    if (branch) return branch;
+
+    const nested = [
+      asRecord(current.data),
+      asRecord(current.message),
+      asRecord(current.metadata),
+      asRecord(current.settings),
+      asRecord(current.config),
+      asRecord(current.context),
+      asRecord(current.payload),
+      asRecord(current.turn_context),
+      asRecord(current.turnContext),
+      asRecord(current.source),
+      asRecord(current.git),
+    ];
+
+    for (const candidate of nested) {
+      if (candidate) queue.push(candidate);
+    }
+  }
+
+  return null;
+}
+
+function extractProjectPathFromRecord(
+  root: Record<string, unknown>,
+): string | null {
+  const queue: Record<string, unknown>[] = [root];
+  const seen = new Set<Record<string, unknown>>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    const projectPath =
+      getStringValue(current.project_path) ??
+      getStringValue(current.projectPath) ??
+      getStringValue(current.cwd) ??
+      getStringValue(current.working_directory) ??
+      getStringValue(current.workspace);
+    if (projectPath) return projectPath;
+
+    const nested = [
+      asRecord(current.data),
+      asRecord(current.message),
+      asRecord(current.metadata),
+      asRecord(current.settings),
+      asRecord(current.config),
+      asRecord(current.context),
+      asRecord(current.payload),
+      asRecord(current.turn_context),
+      asRecord(current.turnContext),
+      asRecord(current.source),
+    ];
+
+    for (const candidate of nested) {
+      if (candidate) queue.push(candidate);
+    }
+  }
+
+  return null;
+}
+
+function extractUserPrompt(content: unknown): string | null {
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (!Array.isArray(content)) return null;
+
+  const chunks = content
+    .map((block) => {
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (record.type !== "text") return "";
+      return getStringValue(record.text) ?? "";
+    })
+    .filter(Boolean);
+
+  if (chunks.length === 0) return null;
+  return chunks.join("\n").trim();
 }
 
 function getSkillPathCandidates(
@@ -194,6 +302,9 @@ export async function aggregateSession(
   const toolUseIdToName = new Map<string, string>(); // tool_use id → tool name (for error tracking)
   let isSidechain = false;
   let detectedEffortMode: string | null = null;
+  let detectedGitBranch: string | null = null;
+  let detectedProjectPath: string | null = null;
+  let firstPrompt: string | null = null;
 
   // Latency tracking
   const turnLatencies: number[] = [];
@@ -209,12 +320,17 @@ export async function aggregateSession(
   const tailMessages: JsonlMessage[] = [];
 
   for await (const msg of streamJsonlFile(jsonlPath)) {
+    const msgRecord = msg as Record<string, unknown>;
     const effortMode = extractEffortModeFromRecord(
-      msg as Record<string, unknown>,
+      msgRecord,
     );
     if (effortMode) {
       detectedEffortMode = effortMode;
     }
+    const gitBranch = extractGitBranchFromRecord(msgRecord);
+    if (gitBranch) detectedGitBranch = gitBranch;
+    const projectPath = extractProjectPathFromRecord(msgRecord);
+    if (projectPath) detectedProjectPath = projectPath;
 
     // Collect for summary
     if (headMessages.length < SUMMARY_HEAD) {
@@ -233,6 +349,10 @@ export async function aggregateSession(
     if (!msg.message) continue;
 
     const { role, content, model, usage } = msg.message;
+    if (!firstPrompt && role === "user") {
+      const prompt = extractUserPrompt(content);
+      if (prompt) firstPrompt = prompt.slice(0, 500);
+    }
 
     // Track timestamps for latency computation
     if (msg.timestamp) {
@@ -576,5 +696,8 @@ export async function aggregateSession(
     unpricedMessages,
     detectedProvider,
     effortMode: detectedEffortMode,
+    firstPrompt,
+    gitBranch: detectedGitBranch,
+    projectPath: detectedProjectPath,
   };
 }

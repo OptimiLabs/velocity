@@ -66,6 +66,8 @@ export function ProviderBreakdownCard({
     messageCount: r.messageCount,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
+    cacheReadTokens: r.cacheReadTokens || 0,
+    cacheWriteTokens: r.cacheWriteTokens || 0,
   }));
 
   const compareMap = useMemo(() => {
@@ -303,6 +305,11 @@ export function ProviderBreakdownCard({
                           <span>Output</span>
                           <span className="text-right tabular-nums">
                             {formatTokens(d.outputTokens)}
+                          </span>
+                          <span>Cache R/W</span>
+                          <span className="text-right tabular-nums">
+                            {formatTokens(d.cacheReadTokens || 0)} /{" "}
+                            {formatTokens(d.cacheWriteTokens || 0)}
                           </span>
                         </div>
                       </div>

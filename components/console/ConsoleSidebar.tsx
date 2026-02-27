@@ -4,23 +4,25 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import {
   Plus,
   Terminal,
+  Folder,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Archive,
-  Cpu,
-  MemoryStick,
-  X,
   Trash2,
+  X,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
-import { useSystemStats } from "@/hooks/useSystemStats";
-import { ConsoleSessionCard } from "@/components/console/ConsoleSessionCard";
+import { toast } from "sonner";
 import type { ConsoleSession, SessionGroup } from "@/types/console";
 
 interface ConsoleSidebarProps {
+  width?: number;
   // Session props (restored)
   sessions: ConsoleSession[];
   activeId: string | null;
@@ -43,37 +45,43 @@ interface ConsoleSidebarProps {
   onOpenArchive?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
-export function ConsoleSidebar({
-  sessions,
-  activeId,
-  onSelectSession,
-  onCloseSession,
-  onRenameSession,
-  onArchiveSession,
-  pinnedSessionIds,
-  onPinSession,
-  onUnpinSession,
-  groups,
-  activeGroupId,
-  onCreateSession,
-  onSwitchGroup,
-  onArchiveGroup,
-  onClearAllSessions,
-  onRenameGroup,
-  onCreateSessionInGroup,
-  onOpenArchive,
-  collapsed,
-  onToggleCollapse,
-}: ConsoleSidebarProps) {
+export function ConsoleSidebar(props: ConsoleSidebarProps) {
+  const {
+    width,
+    sessions,
+    activeId,
+    onSelectSession,
+    onCloseSession,
+    groups,
+    activeGroupId,
+    onCreateSession,
+    onSwitchGroup,
+    onArchiveGroup,
+    onClearAllSessions,
+    onRenameGroup,
+    onCreateSessionInGroup,
+    onOpenArchive,
+    collapsed,
+    onToggleCollapse,
+    isFullscreen = false,
+    onToggleFullscreen,
+  } = props;
   const layoutGroups = useConsoleLayoutStore((s) => s.groups);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+
+  const isTerminalOpen = (terminalState?: string) =>
+    terminalState !== "exited" && terminalState !== "dead";
+  const compact = !collapsed && (width ?? 0) > 0 && (width ?? 0) < 232;
 
   // Derive activity indicators from layout store terminals
   const groupStats = useMemo(() => {
     const stats: Record<
       string,
-      { sessionCount: number; hasActivity: boolean }
+      { sessionCount: number; terminalCount: number; hasActivity: boolean }
     > = {};
     const sessionCounts: Record<string, number> = {};
     for (const session of sessions) {
@@ -86,49 +94,114 @@ export function ConsoleSidebar({
         const terminals = Object.values(groupState.terminals);
         stats[group.id] = {
           sessionCount: sessionCounts[group.id] ?? 0,
+          terminalCount: terminals.filter((t) => isTerminalOpen(t.terminalState))
+            .length,
           hasActivity: terminals.some((t) => t.hasActivity),
         };
       } else {
-        stats[group.id] = { sessionCount: sessionCounts[group.id] ?? 0, hasActivity: false };
+        stats[group.id] = {
+          sessionCount: sessionCounts[group.id] ?? 0,
+          terminalCount: 0,
+          hasActivity: false,
+        };
       }
     }
     return stats;
   }, [groups, layoutGroups, sessions]);
 
-  // Count terminal panes per session (for displaying on session cards)
-  const terminalCountBySession = useMemo(() => {
+  const totalSessionCount = sessions.length;
+  const openTerminalCount = useMemo(() => {
+    let count = 0;
+    for (const group of Object.values(layoutGroups)) {
+      for (const meta of Object.values(group.terminals)) {
+        if (!isTerminalOpen(meta.terminalState)) {
+          continue;
+        }
+        count += 1;
+      }
+    }
+    return count;
+  }, [layoutGroups]);
+
+  const sessionTerminalCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const group of Object.values(layoutGroups)) {
       for (const meta of Object.values(group.terminals)) {
-        if (meta.sessionId) {
-          counts[meta.sessionId] = (counts[meta.sessionId] ?? 0) + 1;
-        }
+        if (!meta.sessionId) continue;
+        if (!isTerminalOpen(meta.terminalState)) continue;
+        counts[meta.sessionId] = (counts[meta.sessionId] ?? 0) + 1;
       }
     }
     return counts;
   }, [layoutGroups]);
 
-  // Filter sessions for the active group into active/ended buckets
-  const activeGroupSessions = useMemo(
-    () =>
-      activeGroupId
-        ? sessions.filter((s) => s.groupId === activeGroupId)
-        : [],
-    [sessions, activeGroupId],
-  );
-  const activeSessions = useMemo(
-    () => activeGroupSessions.filter((s) => s.status === "active"),
-    [activeGroupSessions],
-  );
-  const endedSessions = useMemo(
-    () => activeGroupSessions.filter((s) => s.status === "idle"),
-    [activeGroupSessions],
-  );
+  const sessionsByGroup = useMemo(() => {
+    const grouped = new Map<string, ConsoleSession[]>();
+    for (const session of sessions) {
+      if (!session.groupId) continue;
+      const existing = grouped.get(session.groupId) ?? [];
+      existing.push(session);
+      grouped.set(session.groupId, existing);
+    }
+    for (const [gid, list] of grouped) {
+      grouped.set(
+        gid,
+        [...list].sort(
+          (a, b) =>
+            (b.lastActivityAt ?? b.createdAt) - (a.lastActivityAt ?? a.createdAt),
+        ),
+      );
+    }
+    return grouped;
+  }, [sessions]);
 
-  const pinnedSet = useMemo(
-    () => new Set(pinnedSessionIds ?? []),
-    [pinnedSessionIds],
-  );
+  const formatCountLabel = (
+    count: number,
+    singular: string,
+    plural: string,
+    shortUnit?: string,
+  ) =>
+    shortUnit
+      ? `${count}${shortUnit}`
+      : `${count} ${count === 1 ? singular : plural}`;
+
+  const openWorkspace = (groupId: string) => {
+    onSwitchGroup(groupId);
+    setExpandedGroupId(groupId);
+    const groupSessions = sessionsByGroup.get(groupId) ?? [];
+    const firstSession =
+      groupSessions.find((s) => s.status === "active" && !!s.terminalId) ??
+      groupSessions.find((s) => !!s.terminalId) ??
+      groupSessions[0];
+    if (firstSession) {
+      queueMicrotask(() => {
+        onSelectSession(firstSession.id);
+      });
+    }
+  };
+
+  const handleArchiveWorkspace = (
+    group: SessionGroup,
+    runningTerminalCount: number,
+  ) => {
+    if (!onArchiveGroup) return;
+    toast.warning(`Close workspace "${group.label}"?`, {
+      id: `close-workspace-${group.id}`,
+      description:
+        runningTerminalCount > 0
+          ? `This will close all running terminals in this workspace (${runningTerminalCount}).`
+          : "This removes the workspace and its sessions.",
+      action: {
+        label: "Close workspace",
+        onClick: () => onArchiveGroup(group.id),
+      },
+      cancel: {
+        label: "Cancel",
+        onClick: () => {},
+      },
+      duration: 10000,
+    });
+  };
 
   // Collapsed mini-mode
   if (collapsed) {
@@ -152,14 +225,25 @@ export function ConsoleSidebar({
         >
           <Plus size={14} />
         </Button>
+        {onToggleFullscreen && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="w-8 h-8 p-0"
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            onClick={onToggleFullscreen}
+          >
+            {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </Button>
+        )}
         <div className="flex-1 flex flex-col items-center gap-0.5 pt-1 overflow-y-auto min-h-0">
           {groups.map((g) => {
             const stats = groupStats[g.id];
             return (
               <button
                 key={g.id}
-                onClick={() => onSwitchGroup(g.id)}
-                title={`${g.label} (${stats?.sessionCount ?? 0} sessions)`}
+                onClick={() => openWorkspace(g.id)}
+                title={`${g.label} (${stats?.sessionCount ?? 0} sessions, ${stats?.terminalCount ?? 0} terminals)`}
                 className={cn(
                   "relative w-8 h-8 rounded-md flex items-center justify-center text-micro font-mono font-medium transition-all shrink-0 group",
                   g.id === activeGroupId
@@ -185,12 +269,17 @@ export function ConsoleSidebar({
   return (
     <div className="flex flex-col h-full overflow-hidden border-r border-border bg-sidebar">
       {/* Header */}
-      <div className="px-2.5 py-2 border-b border-border flex items-center gap-1.5 shrink-0">
+      <div
+        className={cn(
+          "border-b border-border flex items-center gap-1.5 shrink-0",
+          compact ? "px-2 py-1.5" : "px-2.5 py-2",
+        )}
+      >
         {onToggleCollapse && (
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 w-7 p-0 shrink-0"
+            className={cn("p-0 shrink-0", compact ? "h-6 w-6" : "h-7 w-7")}
             title="Collapse sidebar"
             onClick={onToggleCollapse}
           >
@@ -200,29 +289,59 @@ export function ConsoleSidebar({
         <Button
           size="sm"
           variant="outline"
-          className="flex-1 h-7 text-xs gap-1.5 border-primary/20 hover:bg-muted/50 hover:border-primary/30 text-foreground"
+          className={cn(
+            "flex-1 min-w-0 text-xs gap-1.5 border-primary/20 hover:bg-muted/50 hover:border-primary/30 text-foreground",
+            compact ? "h-6 px-2" : "h-7",
+          )}
           onClick={onCreateSession}
         >
           <Plus size={12} />
-          New Workspace
-          <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">{sessions.length}</span>
+          <span className="truncate">{compact ? "New" : "New Workspace"}</span>
+          <span
+            className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums"
+            title={`${groups.length} workspaces`}
+          >
+            {groups.length}
+          </span>
         </Button>
         {onOpenArchive && (
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 w-7 p-0 shrink-0"
+            className={cn("p-0 shrink-0", compact ? "h-6 w-6" : "h-7 w-7")}
             title="Archived sessions"
             onClick={onOpenArchive}
           >
             <Archive size={12} />
           </Button>
         )}
+        {onToggleFullscreen && (
+          <Button
+            size="sm"
+            variant={isFullscreen ? "secondary" : "ghost"}
+            className={cn("p-0 shrink-0", compact ? "h-6 w-6" : "h-7 w-7")}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            onClick={onToggleFullscreen}
+          >
+            {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+          </Button>
+        )}
+      </div>
+      <div
+        className={cn(
+          "border-b border-border/70 text-[10px] text-muted-foreground tabular-nums",
+          compact ? "px-2 py-0.5" : "px-2.5 py-1",
+        )}
+        title="Sessions can exist without an open terminal if they are idle or ended."
+      >
+        {compact
+          ? `${groups.length} ws · ${totalSessionCount} sess · ${openTerminalCount} open`
+          : `${groups.length} workspaces · ${totalSessionCount} sessions · ${openTerminalCount} open terminals`}
       </div>
 
-      {/* Flat session (group) list */}
+      {/* Workspace list (folders first; sessions on explicit expand) */}
       <ScrollArea className="flex-1 min-h-0">
-        <div className="p-2 space-y-0.5">
+        <div className={cn(compact ? "p-1.5 space-y-0.5" : "p-2 space-y-0.5")}>
           {groups.length === 0 ? (
             <div className="px-3 py-8 text-center">
               <Terminal
@@ -240,201 +359,245 @@ export function ConsoleSidebar({
             groups.map((group) => {
               const isActive = group.id === activeGroupId;
               const stats = groupStats[group.id];
-
-              if (isActive) {
-                // Active group: expanded with nested sessions
-                return (
-                  <div key={group.id} className="space-y-0.5">
-                    {/* Group header */}
-                    <div
-                      className={cn(
-                        "group/row flex items-center gap-2 px-2.5 py-2 rounded-md text-xs transition-colors cursor-pointer",
-                        "bg-primary/10 text-primary",
-                      )}
-                      onClick={() => onSwitchGroup(group.id)}
-                    >
-                      <Terminal size={13} className="shrink-0" />
-                      <InlineGroupLabel
-                        label={group.label}
-                        onRename={
-                          onRenameGroup
-                            ? (label) => onRenameGroup(group.id, label)
-                            : undefined
-                        }
-                      />
-                      <div className="ml-auto flex items-center gap-1 shrink-0">
-                        <span
-                          className={cn(
-                            "text-[10px] text-primary/60 font-mono tabular-nums text-right w-[16px] shrink-0",
-                            (stats?.sessionCount ?? 0) === 0 && "opacity-50",
-                          )}
-                        >
-                          {stats?.sessionCount ?? 0}
-                        </span>
-                        {onCreateSessionInGroup && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onCreateSessionInGroup(group.id);
-                            }}
-                            className="p-0.5 rounded hover:bg-primary/20 text-primary/60 hover:text-primary transition-colors opacity-0 group-hover/row:opacity-100 shrink-0"
-                          title="Add terminal session"
-                          >
-                            <Plus size={12} />
-                          </button>
-                        )}
-                        {onArchiveGroup && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onArchiveGroup(group.id);
-                            }}
-                            className="p-0.5 rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover/row:opacity-100 shrink-0"
-                            title="Close session"
-                          >
-                            <X size={12} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Nested session cards */}
-                    <div className="pl-3 space-y-0.5">
-                      {activeSessions.length > 0 && (
-                        <div className="space-y-0.5">
-                          {activeSessions.length > 0 && endedSessions.length > 0 && (
-                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium px-2.5 pt-1">
-                              Active
-                            </div>
-                          )}
-                          {activeSessions.map((s) => (
-                            <ConsoleSessionCard
-                              key={s.id}
-                              session={s}
-                              isActive={s.id === activeId}
-                              onSelect={() => onSelectSession(s.id)}
-                              onClose={() => onCloseSession(s.id)}
-                              onRename={
-                                onRenameSession
-                                  ? (label) => onRenameSession(s.id, label)
-                                  : undefined
-                              }
-                              onArchive={
-                                onArchiveSession
-                                  ? () => onArchiveSession(s.id)
-                                  : undefined
-                              }
-                              isPinned={pinnedSet.has(s.id)}
-                              onPin={
-                                pinnedSet.has(s.id)
-                                  ? onUnpinSession
-                                    ? () => onUnpinSession(s.id)
-                                    : undefined
-                                  : onPinSession
-                                    ? () => onPinSession(s.id)
-                                    : undefined
-                              }
-                              terminalCount={terminalCountBySession[s.id]}
-                            />
-                          ))}
-                        </div>
-                      )}
-                      {endedSessions.length > 0 && (
-                        <div className="space-y-0.5">
-                          {activeSessions.length > 0 && (
-                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium px-2.5 pt-1">
-                              Ended
-                            </div>
-                          )}
-                          {endedSessions.map((s) => (
-                            <ConsoleSessionCard
-                              key={s.id}
-                              session={s}
-                              isActive={s.id === activeId}
-                              onSelect={() => onSelectSession(s.id)}
-                              onClose={() => onCloseSession(s.id)}
-                              onRename={
-                                onRenameSession
-                                  ? (label) => onRenameSession(s.id, label)
-                                  : undefined
-                              }
-                              onArchive={
-                                onArchiveSession
-                                  ? () => onArchiveSession(s.id)
-                                  : undefined
-                              }
-                              isPinned={pinnedSet.has(s.id)}
-                              onPin={
-                                pinnedSet.has(s.id)
-                                  ? onUnpinSession
-                                    ? () => onUnpinSession(s.id)
-                                    : undefined
-                                  : onPinSession
-                                    ? () => onPinSession(s.id)
-                                    : undefined
-                              }
-                              terminalCount={terminalCountBySession[s.id]}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              }
-
-              // Inactive group: flat row (unchanged)
+              const groupSessions = sessionsByGroup.get(group.id) ?? [];
+              const isExpanded = expandedGroupId === group.id;
               return (
-                <div
-                  key={group.id}
-                  className={cn(
-                    "group/row flex items-center gap-2 px-2.5 py-2 rounded-md text-xs transition-colors cursor-pointer",
-                    "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
-                  )}
-                  onClick={() => onSwitchGroup(group.id)}
-                >
-                  <Terminal size={13} className="shrink-0" />
-                  <span className="truncate flex-1 text-left font-medium">
-                    {group.label}
-                  </span>
-                  <div className="ml-auto flex items-center gap-1 shrink-0">
-                    <span
-                      className={cn(
-                        "text-[10px] text-muted-foreground font-mono tabular-nums text-right w-[16px] shrink-0",
-                        (stats?.sessionCount ?? 0) === 0 && "opacity-50",
-                      )}
-                    >
-                      {stats?.sessionCount ?? 0}
-                    </span>
+                <div key={group.id} className="space-y-1">
+                  <div
+                    className={cn(
+                      "group/row flex items-center rounded-md text-xs transition-colors cursor-pointer",
+                      compact ? "gap-1.5 px-2 py-1.5" : "gap-2 px-2.5 py-2",
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                    )}
+                    onClick={() => openWorkspace(group.id)}
+                  >
+                    <Folder size={13} className="shrink-0" />
+                    <InlineGroupLabel
+                      label={group.label}
+                      onRename={
+                        onRenameGroup
+                          ? (label) => onRenameGroup(group.id, label)
+                          : undefined
+                      }
+                    />
                     {stats?.hasActivity && (
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    )}
+                    {compact ? (
+                      <span
+                        className={cn(
+                          "text-[10px] text-right shrink-0 tabular-nums",
+                          isActive ? "text-primary/70" : "text-muted-foreground",
+                          (stats?.sessionCount ?? 0) === 0 &&
+                            (stats?.terminalCount ?? 0) === 0 &&
+                            "opacity-50",
+                        )}
+                        title={`${stats?.sessionCount ?? 0} sessions · ${stats?.terminalCount ?? 0} open terminals`}
+                      >
+                        {formatCountLabel(stats?.sessionCount ?? 0, "session", "sessions", "s")} ·{" "}
+                        {formatCountLabel(stats?.terminalCount ?? 0, "terminal", "terminals", "t")}
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className={cn(
+                            "text-[10px] text-right shrink-0",
+                            isActive ? "text-primary/70" : "text-muted-foreground",
+                            (stats?.sessionCount ?? 0) === 0 &&
+                              (stats?.terminalCount ?? 0) === 0 &&
+                              "opacity-50",
+                          )}
+                          title="Sessions"
+                        >
+                          {formatCountLabel(stats?.sessionCount ?? 0, "session", "sessions")}
+                        </span>
+                        <span
+                          className={cn(
+                            "text-[10px] text-right shrink-0",
+                            isActive ? "text-primary/70" : "text-muted-foreground",
+                            (stats?.terminalCount ?? 0) === 0 && "opacity-60",
+                          )}
+                          title="Open terminals"
+                        >
+                          {formatCountLabel(stats?.terminalCount ?? 0, "terminal", "terminals")}
+                        </span>
+                      </>
+                    )}
+                    {groupSessions.length > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedGroupId((prev) =>
+                            prev === group.id ? null : group.id,
+                          );
+                        }}
+                        className="p-0.5 rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors"
+                        title={
+                          isExpanded ? "Hide sessions" : "Show sessions"
+                        }
+                      >
+                        <ChevronDown
+                          size={12}
+                          className={cn(
+                            "transition-transform",
+                            isExpanded ? "rotate-180" : "",
+                          )}
+                        />
+                      </button>
+                    )}
+                    {onCreateSessionInGroup && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCreateSessionInGroup(group.id);
+                        }}
+                        className={cn(
+                          "p-0.5 rounded transition-colors",
+                          isActive
+                            ? "hover:bg-primary/20 text-primary/70 hover:text-primary"
+                            : "hover:bg-muted/40 text-muted-foreground hover:text-foreground",
+                        )}
+                        title="Add terminal session"
+                      >
+                        <Plus size={12} />
+                      </button>
                     )}
                     {onArchiveGroup && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          onArchiveGroup(group.id);
+                          handleArchiveWorkspace(
+                            group,
+                            stats?.terminalCount ?? 0,
+                          );
                         }}
-                        className="p-0.5 rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover/row:opacity-100"
-                        title="Close session"
+                        className="p-0.5 rounded hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors"
+                        title="Close workspace"
                       >
                         <X size={12} />
                       </button>
                     )}
                   </div>
+                  {isExpanded && (
+                    <div className={cn(compact ? "pl-3 space-y-0.5" : "pl-4 space-y-0.5")}>
+                      {groupSessions.length === 0 ? (
+                        <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                          No sessions
+                        </div>
+                      ) : (
+                        groupSessions.map((session) => (
+                          <div
+                            key={session.id}
+                            className={cn(
+                              "group/session flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] cursor-pointer transition-colors",
+                              session.id === activeId
+                                ? "bg-primary/10 text-primary"
+                                : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                            )}
+                            onClick={() => {
+                              onSwitchGroup(group.id);
+                              onSelectSession(session.id);
+                            }}
+                          >
+                            <Terminal size={11} className="shrink-0" />
+                            <span className="truncate flex-1">
+                              {session.label}
+                            </span>
+                            <span
+                              className="text-[10px] text-muted-foreground/80 shrink-0"
+                              title="Open terminals for this session"
+                            >
+                              {formatCountLabel(
+                                sessionTerminalCounts[session.id] ?? 0,
+                                "terminal",
+                                "terminals",
+                                compact ? "t" : undefined,
+                              )}
+                            </span>
+                            {session.status !== "active" && (
+                              <span className="text-[10px] text-muted-foreground/70">
+                                Ended
+                              </span>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onCloseSession(session.id);
+                              }}
+                              className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover/session:opacity-100"
+                              title="Close session"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })
           )}
         </div>
       </ScrollArea>
+      {onClearAllSessions && groups.length > 0 && (
+        <div className="border-t border-border/70 p-2">
+          <ClearAllWorkspacesButton
+            count={groups.length}
+            onClearAll={onClearAllSessions}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
-      {/* Footer with resource indicator + shortcut hints */}
-      <div className="p-2 border-t border-border shrink-0 space-y-1">
-        <ResourceIndicator />
-        {onClearAllSessions && <ClearAllButton onClearAll={onClearAllSessions} />}
-        <ShortcutHints />
-      </div>
+function ClearAllWorkspacesButton({
+  count,
+  onClearAll,
+}: {
+  count: number;
+  onClearAll: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="w-full flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+        title="Delete all workspaces and sessions"
+      >
+        <Trash2 size={11} />
+        Delete all workspaces
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => {
+          onClearAll();
+          setConfirming(false);
+        }}
+        className="flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
+        title="Delete all workspaces and close all running terminals"
+      >
+        <Trash2 size={11} />
+        Confirm delete ({count})
+      </button>
+      <button
+        type="button"
+        onClick={() => setConfirming(false)}
+        className="rounded-md px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-muted transition-colors"
+      >
+        Cancel
+      </button>
     </div>
   );
 }
@@ -498,110 +661,5 @@ function InlineGroupLabel({
     >
       {label}
     </span>
-  );
-}
-
-function useModKey() {
-  const [isMac, setIsMac] = useState(true);
-  useEffect(() => {
-    setIsMac(/Mac|iPhone|iPad|iPod/.test(navigator.platform));
-  }, []);
-  return isMac ? "\u2318" : "Ctrl+";
-}
-
-/** Compact resource indicator showing terminal count, CPU, and RAM usage. */
-function ResourceIndicator() {
-  const groups = useConsoleLayoutStore((s) => s.groups);
-  const { data: stats } = useSystemStats();
-
-  // Count terminals across all groups
-  const terminalCount = useMemo(() => {
-    let count = 0;
-    for (const group of Object.values(groups)) {
-      count += Object.keys(group.terminals).length;
-    }
-    return count;
-  }, [groups]);
-
-  const cpuColor =
-    stats && stats.cpu > 80 ? "text-amber-400" : "text-muted-foreground";
-  const ramColor =
-    stats && stats.memory.percent > 85
-      ? "text-amber-400"
-      : "text-muted-foreground";
-
-  return (
-    <div className="flex items-center justify-between gap-2 text-[10px] font-mono px-1 py-0.5">
-      <span
-        className="flex items-center gap-1 text-muted-foreground"
-        title="Open terminals"
-      >
-        <Terminal size={10} />
-        {terminalCount}
-      </span>
-      {stats && (
-        <>
-          <span
-            className={cn("flex items-center gap-1", cpuColor)}
-            title="CPU usage"
-          >
-            <Cpu size={10} />
-            {Math.round(stats.cpu)}%
-          </span>
-          <span
-            className={cn("flex items-center gap-1", ramColor)}
-            title="RAM usage"
-          >
-            <MemoryStick size={10} />
-            {Math.round(stats.memory.percent)}%
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** Two-click "Clear All Sessions" button with confirmation state. */
-function ClearAllButton({ onClearAll }: { onClearAll: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-
-  if (confirming) {
-    return (
-      <div className="flex items-center gap-1 px-1">
-        <button
-          onClick={() => { onClearAll(); setConfirming(false); }}
-          className="flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
-        >
-          <Trash2 size={11} />
-          Yes, clear all
-        </button>
-        <button
-          onClick={() => setConfirming(false)}
-          className="rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted transition-colors"
-        >
-          Cancel
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => setConfirming(true)}
-      className="w-full flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-    >
-      <Trash2 size={11} />
-      Clear all sessions
-    </button>
-  );
-}
-
-function ShortcutHints() {
-  const mod = useModKey();
-  return (
-    <div className="text-[9px] font-mono text-text-quaternary tracking-wide text-center space-x-2.5">
-      <span>{mod}N workspace</span>
-      <span>{mod}W close</span>
-    </div>
   );
 }

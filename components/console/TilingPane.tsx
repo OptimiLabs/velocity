@@ -6,13 +6,14 @@ import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resiz
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsPanel } from "./SettingsPanel";
-import { ContextPanel } from "./ContextPanel";
 import { PaneHeader, getDraggedPaneId } from "./PaneHeader";
 import { clearTerminalBuffer } from "@/lib/console/terminal-registry";
 import { clearSerializedBuffer, clearPromptTracker, disposeTerminalDomCache } from "@/lib/console/terminal-cache";
 import { EmptyTerminalPrompt } from "./EmptyTerminalPrompt";
 import { deleteScrollback } from "@/lib/console/terminal-db";
 import type { PaneNode, ConsoleSession, PaneId, TerminalMeta } from "@/types/console";
+import { resolveConsoleCwd } from "@/lib/console/cwd";
+import { Settings as SettingsIcon, X } from "lucide-react";
 
 const TerminalPanel = dynamic(
   () => import("./TerminalPanel").then((m) => ({ default: m.TerminalPanel })),
@@ -27,11 +28,25 @@ function containsPane(node: PaneNode, paneId: string): boolean {
   return false;
 }
 
-/**
- * Pass-through filter to keep all panes mounted (prevents refresh/flicker).
- */
-function filterPaneTree(node: PaneNode): PaneNode | null {
-  return node;
+function filterPaneTree(
+  node: PaneNode,
+  opts: {
+    terminals: Record<string, { sessionId?: string; isClaudeSession?: boolean }>;
+    activeSessionId: string | null;
+    sessionId?: string;
+    activePaneId: string | null;
+  },
+): PaneNode | null {
+  if (node.kind === "leaf") {
+    return nodeHasVisibleContent({ ...opts, node }) ? node : null;
+  }
+
+  const left = filterPaneTree(node.children[0], opts);
+  const right = filterPaneTree(node.children[1], opts);
+  if (!left && !right) return null;
+  if (!left) return right;
+  if (!right) return left;
+  return { ...node, children: [left, right] };
 }
 
 function nodeHasVisibleContent(opts: {
@@ -42,6 +57,9 @@ function nodeHasVisibleContent(opts: {
   activePaneId: string | null;
 }): boolean {
   const { node, terminals, activeSessionId, sessionId, activePaneId } = opts;
+  if (node.kind === "leaf" && node.content.type === "context") {
+    return false;
+  }
   const effectiveSessionId = activeSessionId ?? sessionId ?? null;
   if (node.kind === "split") {
     return (
@@ -56,14 +74,14 @@ function nodeHasVisibleContent(opts: {
     case "terminal": {
       const meta = terminals[node.content.terminalId];
       if (!meta?.sessionId) return true;
-      if (activePaneId === node.id) return true; // Active pane always visible (covers timing gap)
       return meta.sessionId === effectiveSessionId;
     }
     case "settings":
-    case "context":
       return activePaneId === node.id;
+    case "context":
+      return false;
     case "empty":
-      return true;
+      return activePaneId === node.id;
     default:
       return true;
   }
@@ -91,6 +109,7 @@ interface TilingPaneProps {
   wsRef: React.RefObject<WebSocket | null>;
   wsVersion?: number;
   isOnly?: boolean;
+  onCreateTerminal: () => void;
   /** Group-specific terminal metadata (avoids reading wrong group from store) */
   groupTerminals?: Record<string, TerminalMeta>;
   /** Group-specific active pane ID */
@@ -107,6 +126,7 @@ export const TilingPane = memo(function TilingPaneInner({
   wsRef,
   wsVersion,
   isOnly,
+  onCreateTerminal,
   groupTerminals,
   groupActivePaneId,
   groupFocusedPaneId,
@@ -399,28 +419,57 @@ export const TilingPane = memo(function TilingPaneInner({
           <div className="absolute inset-0">
             {node.content.type === "terminal" &&
               (() => {
-                const meta = terminals[node.content.terminalId];
+                const terminalId = node.content.terminalId;
+                const meta = terminals[terminalId];
+                const sidePanel = meta?.sidePanel;
+                const showSidePanel = sidePanel === "settings";
                 return (
-                  <TerminalPanel
-                    key={node.content.terminalId}
-                    terminalId={node.content.terminalId}
-                    cwd={meta?.cwd || session?.cwd || "~"}
-                    wsRef={wsRef}
-                    wsVersion={wsVersion}
-                    command={meta?.command}
-                    args={meta?.args}
-                    isActive={isFocused}
-                  />
+                  <div className="absolute inset-0 flex min-w-0">
+                    <div className="relative flex-1 min-w-0">
+                      <div className="absolute inset-0">
+                        <TerminalPanel
+                          key={terminalId}
+                          terminalId={terminalId}
+                          cwd={resolveConsoleCwd(meta?.cwd, session?.cwd)}
+                          wsRef={wsRef}
+                          wsVersion={wsVersion}
+                          command={meta?.command}
+                          args={meta?.args}
+                          isActive={isFocused}
+                        />
+                      </div>
+                    </div>
+                    {showSidePanel && (
+                      <aside className="w-[360px] max-w-[45vw] shrink-0 border-l border-border/60 bg-card/70 backdrop-blur-sm flex flex-col">
+                        <div className="h-8 px-3 border-b border-border/50 flex items-center gap-2 shrink-0">
+                          <SettingsIcon className="w-3.5 h-3.5 text-muted-foreground" />
+                          <span className="text-xs font-semibold text-foreground">Settings</span>
+                          <button
+                            type="button"
+                            aria-label="Close panel"
+                            className="ml-auto p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                            onClick={() =>
+                              useConsoleLayoutStore
+                                .getState()
+                                .updateTerminalMeta(terminalId, {
+                                  sidePanel: undefined,
+                                })
+                            }
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-hidden min-h-0">
+                          <SettingsPanel wsRef={wsRef} terminalId={terminalId} />
+                        </div>
+                      </aside>
+                    )}
+                  </div>
                 );
               })()}
             {node.content.type === "settings" && <SettingsPanel wsRef={wsRef} />}
-            {node.content.type === "context" && (
-              <ContextPanel session={session} />
-            )}
             {node.content.type === "empty" && (
-              <EmptyTerminalPrompt onCreateTerminal={() => {
-                // Trigger ⌘T equivalent — will replace this empty pane via addTerminal
-              }} />
+              <EmptyTerminalPrompt onCreateTerminal={onCreateTerminal} />
             )}
           </div>
         </div>
@@ -444,6 +493,7 @@ export const TilingPane = memo(function TilingPaneInner({
           session={session}
           wsRef={wsRef}
           wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
           groupTerminals={groupTerminals}
           groupActivePaneId={groupActivePaneId}
           groupActiveSessionId={groupActiveSessionId}
@@ -458,6 +508,7 @@ export const TilingPane = memo(function TilingPaneInner({
           session={session}
           wsRef={wsRef}
           wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
           groupTerminals={groupTerminals}
           groupActivePaneId={groupActivePaneId}
           groupActiveSessionId={groupActiveSessionId}
@@ -469,9 +520,18 @@ export const TilingPane = memo(function TilingPaneInner({
     return null;
   }
 
-  // Keep all panes mounted; visibility is handled by pane focus.
-  const filteredLeft = filterPaneTree(node.children[0]);
-  const filteredRight = filterPaneTree(node.children[1]);
+  const filteredLeft = filterPaneTree(node.children[0], {
+    terminals,
+    activeSessionId: effectiveSessionId,
+    sessionId: session?.id,
+    activePaneId,
+  });
+  const filteredRight = filterPaneTree(node.children[1], {
+    terminals,
+    activeSessionId: effectiveSessionId,
+    sessionId: session?.id,
+    activePaneId,
+  });
 
   // If both children are pruned, render nothing
   if (!filteredLeft && !filteredRight) return null;
@@ -480,26 +540,28 @@ export const TilingPane = memo(function TilingPaneInner({
   if (!filteredLeft && filteredRight) {
     return (
       <TilingPane
-        node={filteredRight}
-        session={session}
-        wsRef={wsRef}
-        wsVersion={wsVersion}
-        groupTerminals={groupTerminals}
-        groupActivePaneId={groupActivePaneId}
-        groupActiveSessionId={groupActiveSessionId}
+          node={filteredRight}
+          session={session}
+          wsRef={wsRef}
+          wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
+          groupTerminals={groupTerminals}
+          groupActivePaneId={groupActivePaneId}
+          groupActiveSessionId={groupActiveSessionId}
       />
     );
   }
   if (filteredLeft && !filteredRight) {
     return (
       <TilingPane
-        node={filteredLeft}
-        session={session}
-        wsRef={wsRef}
-        wsVersion={wsVersion}
-        groupTerminals={groupTerminals}
-        groupActivePaneId={groupActivePaneId}
-        groupActiveSessionId={groupActiveSessionId}
+          node={filteredLeft}
+          session={session}
+          wsRef={wsRef}
+          wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
+          groupTerminals={groupTerminals}
+          groupActivePaneId={groupActivePaneId}
+          groupActiveSessionId={groupActiveSessionId}
       />
     );
   }
@@ -544,6 +606,7 @@ export const TilingPane = memo(function TilingPaneInner({
           session={session}
           wsRef={wsRef}
           wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
           groupTerminals={groupTerminals}
           groupActivePaneId={groupActivePaneId}
           groupActiveSessionId={groupActiveSessionId}
@@ -564,6 +627,7 @@ export const TilingPane = memo(function TilingPaneInner({
           session={session}
           wsRef={wsRef}
           wsVersion={wsVersion}
+          onCreateTerminal={onCreateTerminal}
           groupTerminals={groupTerminals}
           groupActivePaneId={groupActivePaneId}
           groupActiveSessionId={groupActiveSessionId}

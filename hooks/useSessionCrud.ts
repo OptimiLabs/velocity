@@ -4,11 +4,20 @@ import { useCallback } from "react";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import { archiveScrollback } from "@/lib/console/terminal-db";
 import { findLeafByContent } from "@/lib/console/pane-tree";
-import { buildClaudeArgs, buildClaudeEnv } from "@/lib/console/claude-args";
+import {
+  buildCliLaunchConfig,
+  getCliProviderLabel,
+  inferProviderFromCommand,
+  inferProviderFromModel,
+  isCliProviderEnabled,
+  normalizeEffort,
+  normalizeModel,
+} from "@/lib/console/cli-launch";
 import { trackActivity, deleteActivity } from "@/lib/console/activity-tracker";
 import { STORAGE_KEY_LAST_CWD } from "@/lib/console/session-persistence";
 import { toast } from "sonner";
 import type { ConsoleSession, SessionGroup } from "@/types/console";
+import type { ConfigProvider } from "@/types/provider";
 
 export interface UseSessionCrudConfig {
   sessions: Map<string, ConsoleSession>;
@@ -34,6 +43,7 @@ export interface UseSessionCrudResult {
   stopSession: (id: string) => void;
   removeSession: (id: string) => void;
   renameSession: (id: string, label: string) => void;
+  updateSessionEnv: (id: string, envPatch: Record<string, string>) => void;
   restartSession: (id: string, opts?: RestartSessionOpts) => void;
   sendModelChange: (id: string, model: string) => void;
   archiveSession: (id: string) => Promise<void>;
@@ -44,6 +54,7 @@ interface CreateSessionOpts {
   cwd: string;
   label?: string;
   prompt?: string;
+  provider?: ConfigProvider;
   model?: string;
   effort?: "low" | "medium" | "high";
   env?: Record<string, string>;
@@ -65,6 +76,17 @@ interface RestartSessionOpts {
   model?: string;
   effort?: "low" | "medium" | "high";
   env?: Record<string, string>;
+}
+
+function providerDisabledDescription(
+  provider: ConfigProvider,
+  source: "user" | "auto",
+): string {
+  const label = getCliProviderLabel(provider);
+  if (source === "auto") {
+    return `Skipped auto-launch. Enable ${label} in Settings -> Model & Provider.`;
+  }
+  return `Enable ${label} in Settings -> Model & Provider to launch ${label} sessions.`;
 }
 
 export function useSessionCrud(
@@ -103,6 +125,7 @@ export function useSessionCrud(
       cwd,
       label,
       prompt,
+      provider = "claude",
       model,
       effort,
       env,
@@ -112,12 +135,10 @@ export function useSessionCrud(
       agentName,
       source = "user",
     }: CreateSessionOpts) => {
-      if (settingsRef.current?.claudeCliEnabled === false) {
-        toast.error("Claude CLI is disabled.", {
-          description:
-            source === "auto"
-              ? "Skipped auto-launch. Enable it in Settings -> Model & Provider."
-              : "Enable it in Settings -> Model & Provider to launch Claude sessions.",
+      if (!isCliProviderEnabled(settingsRef.current, provider)) {
+        const providerLabel = getCliProviderLabel(provider);
+        toast.error(`${providerLabel} CLI is disabled.`, {
+          description: providerDisabledDescription(provider, source),
         });
         return null;
       }
@@ -127,19 +148,23 @@ export function useSessionCrud(
 
       const id = crypto.randomUUID();
       const effectiveModel =
-        model ?? (settingsRef.current?.model as string | undefined);
-      const effectiveEffort = (effort ??
-        (settingsRef.current?.effortLevel as string | undefined)) as
-        | "low"
-        | "medium"
-        | "high"
-        | undefined;
-      const claudeArgs = buildClaudeArgs({
+        normalizeModel(model) ??
+        (provider === "claude"
+          ? normalizeModel(settingsRef.current?.model)
+          : undefined);
+      const effectiveEffort =
+        normalizeEffort(effort) ??
+        (provider === "claude"
+          ? normalizeEffort(settingsRef.current?.effortLevel)
+          : undefined);
+      const cliLaunch = buildCliLaunchConfig({
+        provider,
         model: effectiveModel,
+        effort: effectiveEffort,
+        env,
         claudeSessionId,
         skipPermissions,
       });
-      const claudeEnv = buildClaudeEnv({ effort: effectiveEffort, env });
 
       const { addTerminal, setActiveSessionId } =
         useConsoleLayoutStore.getState();
@@ -147,14 +172,15 @@ export function useSessionCrud(
         {
           label: label || undefined,
           cwd,
-          envOverrides: claudeEnv,
+          envOverrides: cliLaunch.env,
           sessionId: id,
-          isClaudeSession: true,
-          claudeSessionId,
-          model,
-          effort,
-          command: "claude",
-          args: claudeArgs,
+          isClaudeSession: cliLaunch.isClaudeSession,
+          claudeSessionId:
+            provider === "claude" ? claudeSessionId : undefined,
+          model: effectiveModel,
+          effort: effectiveEffort,
+          command: cliLaunch.command,
+          args: cliLaunch.args,
           pendingPrompt: prompt,
         },
         undefined,
@@ -174,11 +200,12 @@ export function useSessionCrud(
         cwd,
         status: "active",
         kind: "claude",
+        provider,
         createdAt: Date.now(),
-        claudeSessionId,
+        claudeSessionId: provider === "claude" ? claudeSessionId : undefined,
         terminalId,
-        model,
-        effort,
+        model: effectiveModel,
+        effort: effectiveEffort,
         env,
         groupId: targetGroupId ?? undefined,
         agentName,
@@ -322,13 +349,20 @@ export function useSessionCrud(
 
   const switchSession = useCallback(
     (id: string) => {
-      setActiveId(id);
+      setActiveId((prev) => (prev === id ? prev : id));
       const session = sessionsRef.current.get(id);
-      if (session?.terminalId) {
-        const store = useConsoleLayoutStore.getState();
+      const store = useConsoleLayoutStore.getState();
+      const targetTerminalId =
+        session?.terminalId ??
+        Object.values(store.groups)
+          .flatMap((group) => Object.entries(group.terminals))
+          .find(([, meta]) => meta.sessionId === id)?.[0];
+      if (targetTerminalId) {
         for (const [gid, group] of Object.entries(store.groups)) {
-          if (!group.terminals[session.terminalId]) continue;
-          if (gid !== store.activeGroupId) store.switchGroup(gid);
+          if (!group.terminals[targetTerminalId]) continue;
+          if (gid !== store.activeGroupId) {
+            store.switchGroup(gid);
+          }
 
           const freshGroup = useConsoleLayoutStore.getState().groups[gid];
           if (!freshGroup) break;
@@ -340,13 +374,18 @@ export function useSessionCrud(
           });
 
           if (terminalLeaf) {
-            useConsoleLayoutStore.getState().setActivePaneId(terminalLeaf.id);
-            useConsoleLayoutStore.getState().setFocusedPane(terminalLeaf.id);
+            const nextStore = useConsoleLayoutStore.getState();
+            nextStore.setActivePaneId(terminalLeaf.id);
+            nextStore.setFocusedPane(terminalLeaf.id);
           }
           break;
         }
       }
-      useConsoleLayoutStore.getState().setActiveSessionId(id);
+      if (store.activeSessionId !== id) {
+        useConsoleLayoutStore.getState().setActiveSessionId(id);
+      }
+      // Keep keyboard focus in xterm even when selection controls stole DOM focus.
+      useConsoleLayoutStore.getState().requestActiveTerminalFocus();
     },
     [setActiveId, sessionsRef],
   );
@@ -434,6 +473,45 @@ export function useSessionCrud(
     [updateSession, sessions, safeSend],
   );
 
+  const updateSessionEnv = useCallback(
+    (id: string, envPatch: Record<string, string>) => {
+      const session = sessions.get(id);
+      if (!session) return;
+
+      const nextEnv = { ...(session.env ?? {}), ...envPatch };
+      updateSession(id, (s) => ({ ...s, env: nextEnv }));
+
+      if (!session.terminalId) return;
+      const { groups, updateTerminalMeta } = useConsoleLayoutStore.getState();
+      let existingOverrides: Record<string, string> = {};
+      for (const group of Object.values(groups)) {
+        const meta = group.terminals[session.terminalId];
+        if (!meta) continue;
+        existingOverrides = meta.envOverrides ?? {};
+        break;
+      }
+      updateTerminalMeta(session.terminalId, {
+        envOverrides: { ...existingOverrides, ...envPatch },
+      });
+    },
+    [sessions, updateSession],
+  );
+
+  const resolveSessionProvider = useCallback((session: ConsoleSession): ConfigProvider => {
+    if (session.provider) return session.provider;
+
+    if (session.terminalId) {
+      const { groups } = useConsoleLayoutStore.getState();
+      for (const group of Object.values(groups)) {
+        const command = group.terminals[session.terminalId]?.command;
+        const fromCommand = inferProviderFromCommand(command);
+        if (fromCommand) return fromCommand;
+      }
+    }
+
+    return inferProviderFromModel(session.model) ?? "claude";
+  }, []);
+
   const restartSession = useCallback(
     (id: string, opts?: RestartSessionOpts) => {
       const session = sessions.get(id);
@@ -442,10 +520,11 @@ export function useSessionCrud(
         toast.error("Shell sessions do not support restart.");
         return;
       }
-      if (settingsRef.current?.claudeCliEnabled === false) {
-        toast.error("Claude CLI is disabled.", {
-          description:
-            "Enable it in Settings -> Model & Provider to restart this session.",
+      const provider = resolveSessionProvider(session);
+      if (!isCliProviderEnabled(settingsRef.current, provider)) {
+        const providerLabel = getCliProviderLabel(provider);
+        toast.error(`${providerLabel} CLI is disabled.`, {
+          description: `Enable ${providerLabel} in Settings -> Model & Provider to restart this session.`,
         });
         return;
       }
@@ -458,42 +537,46 @@ export function useSessionCrud(
       }
 
       const newModel =
-        opts?.model ??
-        session.model ??
-        (settingsRef.current?.model as string | undefined);
-      const newEffort = (opts?.effort ??
-        session.effort ??
-        (settingsRef.current?.effortLevel as string | undefined)) as
-        | "low"
-        | "medium"
-        | "high"
-        | undefined;
+        normalizeModel(opts?.model) ??
+        normalizeModel(session.model) ??
+        (provider === "claude"
+          ? normalizeModel(settingsRef.current?.model)
+          : undefined);
+      const newEffort =
+        normalizeEffort(opts?.effort) ??
+        normalizeEffort(session.effort) ??
+        (provider === "claude"
+          ? normalizeEffort(settingsRef.current?.effortLevel)
+          : undefined);
       const newEnv = opts?.env ? { ...session.env, ...opts.env } : session.env;
-
-      const claudeArgs = buildClaudeArgs({
+      const cliLaunch = buildCliLaunchConfig({
+        provider,
         model: newModel,
+        effort: newEffort,
+        env: newEnv,
         claudeSessionId: session.claudeSessionId,
       });
-      const claudeEnv = buildClaudeEnv({ effort: newEffort, env: newEnv });
 
       const { addTerminal } = useConsoleLayoutStore.getState();
       const terminalId = addTerminal({
         label: session.label,
         cwd: session.cwd,
-        envOverrides: claudeEnv,
+        envOverrides: cliLaunch.env,
         sessionId: id,
-        isClaudeSession: true,
-        claudeSessionId: session.claudeSessionId,
+        isClaudeSession: cliLaunch.isClaudeSession,
+        claudeSessionId:
+          provider === "claude" ? session.claudeSessionId : undefined,
         model: newModel,
         effort: newEffort,
-        command: "claude",
-        args: claudeArgs,
+        command: cliLaunch.command,
+        args: cliLaunch.args,
       });
       createdTerminalIds.current.add(terminalId);
 
       updateSession(id, (s) => ({
         ...s,
         status: "active",
+        provider,
         terminalId,
         model: newModel,
         effort: newEffort,
@@ -507,6 +590,7 @@ export function useSessionCrud(
       cleanupTerminalArtifacts,
       settingsRef,
       createdTerminalIds,
+      resolveSessionProvider,
     ],
   );
 
@@ -654,6 +738,10 @@ export function useSessionCrud(
           cwd: restored.cwd,
           status: "idle",
           kind: "claude",
+          provider:
+            restored.provider ??
+            inferProviderFromModel(restored.model) ??
+            "claude",
           createdAt: restored.createdAt,
           claudeSessionId: restored.claudeSessionId ?? undefined,
           model: restored.model ?? undefined,
@@ -698,6 +786,7 @@ export function useSessionCrud(
     stopSession,
     removeSession,
     renameSession,
+    updateSessionEnv,
     restartSession,
     sendModelChange,
     archiveSession,

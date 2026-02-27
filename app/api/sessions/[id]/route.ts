@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { deleteSessionsWithCleanup } from "@/lib/db/session-deletion";
 import { jsonWithCache } from "@/lib/api/cache-headers";
+import { refreshProjectAggregates } from "@/lib/db/project-aggregates";
 import type { Session } from "@/types/session";
 import fs from "fs";
 
@@ -133,10 +134,12 @@ export async function PATCH(
   const updated = db
     .prepare("SELECT id, compressed_at FROM sessions WHERE id = ?")
     .get(id) as { id: string; compressed_at: string | null } | undefined;
+  const projectAggregates = refreshProjectAggregates({ activeOnly: true });
 
   return NextResponse.json({
     success: true,
     action,
     session: updated,
+    projectAggregates,
   });
 }

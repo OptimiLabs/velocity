@@ -94,10 +94,11 @@ export function InstructionContextCard({
     );
   }
 
-  const totalTokens = data.instructionFiles.reduce(
-    (s, f) => s + f.tokenCount,
-    0,
-  );
+  const usedTokens =
+    data.totals.usedInstructionTokens ??
+    data.instructionFiles
+      .filter((f) => f.sessionCount > 0)
+      .reduce((s, f) => s + f.tokenCount, 0);
   const filesWithSessions = data.instructionFiles.filter(
     (f) => f.sessionCount > 0,
   ).length;
@@ -110,7 +111,7 @@ export function InstructionContextCard({
           Instruction Context
         </CardTitle>
         <p className="text-xs text-muted-foreground -mt-1">
-          CLAUDE.md and knowledge files loaded into session system prompts
+          Instruction files linked to sessions in the selected date range
         </p>
       </CardHeader>
       <CardContent>
@@ -119,9 +120,9 @@ export function InstructionContextCard({
           <span className="flex items-center gap-1.5">
             <FileText size={11} />
             {filesWithSessions}/{data.totals.totalInstructionFiles} file
-            {data.totals.totalInstructionFiles !== 1 ? "s" : ""} used
+            {data.totals.totalInstructionFiles !== 1 ? "s" : ""} linked
             {" · "}
-            {formatTokens(totalTokens)} total
+            {formatTokens(usedTokens)} linked footprint
           </span>
           <span>
             Avg ~{formatTokens(data.totals.avgTokensPerSession)} per session

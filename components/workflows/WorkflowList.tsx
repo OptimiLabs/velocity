@@ -2,7 +2,7 @@
 
 import { Plus, Trash2, Play, GitMerge, GitBranch, Clock, Copy } from "lucide-react";
 import type { Workflow } from "@/types/workflow";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 interface WorkflowListProps {
   workflows: Workflow[];
@@ -19,6 +19,7 @@ export function WorkflowList({
   onDelete,
   onDuplicate,
 }: WorkflowListProps) {
+  const router = useRouter();
   if (workflows.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -88,14 +89,17 @@ export function WorkflowList({
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Link
-                    href={`/?workflow=${encodeURIComponent(wf.id)}`}
-                    onClick={(e) => e.stopPropagation()}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      router.push(`/?workflow=${encodeURIComponent(wf.id)}`);
+                    }}
                     className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1 rounded text-emerald-500/80 hover:text-emerald-500 transition-all"
                     title="Run workflow"
                   >
                     <Play size={12} />
-                  </Link>
+                  </button>
                   {onDuplicate && (
                     <button
                       type="button"
@@ -142,7 +146,12 @@ export function WorkflowList({
               </div>
               <div className="flex items-center gap-1 mt-2 text-meta text-muted-foreground/50">
                 <Clock size={10} />
-                {new Date(wf.updatedAt).toLocaleDateString()}
+                <time
+                  suppressHydrationWarning
+                  dateTime={wf.updatedAt}
+                >
+                  {new Date(wf.updatedAt).toLocaleDateString()}
+                </time>
               </div>
             </div>
           );

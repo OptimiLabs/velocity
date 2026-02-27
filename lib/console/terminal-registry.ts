@@ -29,7 +29,7 @@ type PtyMessage = {
 type PtyHandler = (msg: PtyMessage) => void;
 
 const MAX_BUFFER_BYTES = 256 * 1024; // 256KB per terminal (offline buffer)
-const MAX_TOTAL_OFFLINE_BUFFER_BYTES = 8 * 1024 * 1024; // 8MB global cap
+const MAX_TOTAL_OFFLINE_BUFFER_BYTES = 4 * 1024 * 1024; // 4MB global cap
 const COALESCE_FLUSH_BYTES = 64 * 1024; // 64KB threshold for immediate coalesce flush
 const ACTIVITY_META_THROTTLE_MS = 2_000;
 
@@ -89,6 +89,26 @@ function evictOfflineBuffersToCap() {
   }
 }
 
+function bufferOfflineOutput(terminalId: string, data: string) {
+  let buf = buffers.get(terminalId);
+  if (!buf) {
+    buf = { chunks: [], bytes: 0 };
+    buffers.set(terminalId, buf);
+  }
+
+  const availableBytes = MAX_BUFFER_BYTES - buf.bytes;
+  if (availableBytes <= 0) return;
+
+  const payloadData =
+    data.length > availableBytes ? data.slice(0, availableBytes) : data;
+  if (!payloadData) return;
+
+  buf.chunks.push({ type: "pty:output", terminalId, data: payloadData });
+  buf.bytes += payloadData.length;
+  totalOfflineBufferedBytes += payloadData.length;
+  evictOfflineBuffersToCap();
+}
+
 export function registerTerminalHandler(id: string, handler: PtyHandler) {
   handlers.set(id, handler);
   // Flush any buffered messages that arrived while no handler was registered
@@ -106,8 +126,11 @@ export function registerTerminalHandler(id: string, handler: PtyHandler) {
 
 export function unregisterTerminalHandler(id: string) {
   handlers.delete(id);
-  // Discard any pending coalesced output — there's no handler to receive it,
-  // and the offline buffer system will capture new data going forward.
+  // Preserve pending coalesced output so fast unmount/remount cycles don't lose data.
+  const pending = coalesceBuffers.get(id);
+  if (pending) {
+    bufferOfflineOutput(id, pending);
+  }
   coalesceBuffers.delete(id);
   coalescePending.delete(id);
   // Don't clear offline buffer — it may be needed when a new handler registers on remount
@@ -138,25 +161,7 @@ export function dispatchPtyMessage(msg: PtyMessage) {
     }
   } else if (msg.type === "pty:output" && msg.data) {
     // Buffer output for terminals without a handler (e.g., unmounted during group switch)
-    let buf = buffers.get(msg.terminalId);
-    if (!buf) {
-      buf = { chunks: [], bytes: 0 };
-      buffers.set(msg.terminalId, buf);
-    }
-    const availableBytes = MAX_BUFFER_BYTES - buf.bytes;
-    if (availableBytes > 0) {
-      const data =
-        msg.data.length > availableBytes
-          ? msg.data.slice(0, availableBytes)
-          : msg.data;
-      if (data.length > 0) {
-        const payload = data === msg.data ? msg : { ...msg, data };
-        buf.chunks.push(payload);
-        buf.bytes += data.length;
-        totalOfflineBufferedBytes += data.length;
-        evictOfflineBuffersToCap();
-      }
-    }
+    bufferOfflineOutput(msg.terminalId, msg.data);
     // Mark unseen activity for background terminals
     try {
       const now = Date.now();

@@ -29,6 +29,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: SETTINGS_KEY });
+      queryClient.invalidateQueries({ queryKey: ["app-settings"] });
     },
   });
 }

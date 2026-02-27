@@ -118,12 +118,16 @@ export function initSchema(db: Database.Database) {
       description TEXT DEFAULT '',
       char_count INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      provider TEXT DEFAULT 'claude',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_instruction_files_project ON instruction_files(project_id);
     CREATE INDEX IF NOT EXISTS idx_instruction_files_type ON instruction_files(file_type);
+    CREATE INDEX IF NOT EXISTS idx_instruction_files_provider ON instruction_files(provider);
+    CREATE INDEX IF NOT EXISTS idx_instruction_files_scope_active
+      ON instruction_files(provider, is_active, file_type, project_id, file_path);
 
     -- Junction table: links instruction files to agents/workflows by name
     CREATE TABLE IF NOT EXISTS instruction_attachments (
@@ -205,7 +209,7 @@ export function initSchema(db: Database.Database) {
   `);
 
   // Schema version tracking — only run migrations for versions > stored version
-  const CURRENT_SCHEMA_VERSION = 36;
+  const CURRENT_SCHEMA_VERSION = 38;
 
   let storedVersion = 0;
   try {
@@ -966,6 +970,38 @@ export function initSchema(db: Database.Database) {
       }
     }
 
+    // v37: Backfill instruction-file providers and add context-scope lookup index.
+    if (storedVersion < 37) {
+      try {
+        db.exec(
+          "UPDATE instruction_files SET provider = 'claude' WHERE provider IS NULL OR TRIM(provider) = ''",
+        );
+      } catch {
+        /* instruction_files/provider may be unavailable in partial legacy schemas */
+      }
+      try {
+        db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_instruction_files_scope_active ON instruction_files(provider, is_active, file_type, project_id, file_path)",
+        );
+      } catch {}
+    }
+
+    // v38: Add provider-scoped session list indexes used by session/analytics APIs.
+    if (storedVersion < 38) {
+      const idx = [
+        "CREATE INDEX IF NOT EXISTS idx_sessions_provider_modified ON sessions(provider, modified_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_provider_created ON sessions(provider, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_provider_project_path ON sessions(provider, project_path)",
+      ];
+      for (const sql of idx) {
+        try {
+          db.exec(sql);
+        } catch {
+          /* index may already exist */
+        }
+      }
+    }
+
     // Store current version
     db.prepare(
       "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('schema_version', ?)",
@@ -1081,6 +1117,16 @@ export function initSchema(db: Database.Database) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_instruction_files_provider ON instruction_files(provider)");
   } catch {}
   try {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_instruction_files_scope_active ON instruction_files(provider, is_active, file_type, project_id, file_path)",
+    );
+  } catch {}
+  try {
+    db.exec(
+      "UPDATE instruction_files SET provider = 'claude' WHERE provider IS NULL OR TRIM(provider) = ''",
+    );
+  } catch {}
+  try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_routing_nodes_provider ON routing_nodes(provider)");
   } catch {}
   try {
@@ -1162,6 +1208,21 @@ export function initSchema(db: Database.Database) {
   try {
     db.exec(
       "CREATE INDEX IF NOT EXISTS idx_sessions_parent_created ON sessions(parent_session_id, created_at ASC)",
+    );
+  } catch {}
+  try {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_sessions_provider_modified ON sessions(provider, modified_at DESC)",
+    );
+  } catch {}
+  try {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_sessions_provider_created ON sessions(provider, created_at DESC)",
+    );
+  } catch {}
+  try {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_sessions_provider_project_path ON sessions(provider, project_path)",
     );
   } catch {}
   try {

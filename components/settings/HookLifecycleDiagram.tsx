@@ -11,7 +11,10 @@ import {
   ArrowDown,
   type LucideIcon,
 } from "lucide-react";
-import { EVENT_RUNTIME_REQUIREMENTS } from "@/lib/hooks/hook-editor-constants";
+import {
+  EVENT_RUNTIME_REQUIREMENTS,
+  type EventRuntimeRequirement,
+} from "@/lib/hooks/hook-editor-constants";
 
 interface EventDef {
   id: string;
@@ -20,8 +23,12 @@ interface EventDef {
   frequency: string;
 }
 
-interface LifecyclePhase {
+export interface HookLifecyclePhase {
   label: string;
+  events: EventDef[];
+}
+
+interface LifecyclePhaseStyle {
   icon: LucideIcon;
   color: string;
   bgGradient: string;
@@ -29,12 +36,20 @@ interface LifecyclePhase {
   dotColor: string;
   badgeBg: string;
   badgeText: string;
-  events: EventDef[];
 }
 
-const LIFECYCLE_PHASES: LifecyclePhase[] = [
-  {
-    label: "Session",
+const DEFAULT_PHASE_STYLE: LifecyclePhaseStyle = {
+  icon: Layers,
+  color: "text-slate-500 dark:text-slate-400",
+  bgGradient: "from-slate-500/10 to-slate-500/5",
+  borderColor: "border-slate-500/25",
+  dotColor: "bg-slate-500 dark:bg-slate-400",
+  badgeBg: "bg-slate-500/15",
+  badgeText: "text-slate-500 dark:text-slate-400",
+};
+
+const PHASE_STYLE_BY_LABEL: Record<string, LifecyclePhaseStyle> = {
+  session: {
     icon: PlayCircle,
     color: "text-blue-500 dark:text-blue-400",
     bgGradient: "from-blue-500/10 to-blue-500/5",
@@ -42,6 +57,66 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
     dotColor: "bg-blue-500 dark:bg-blue-400",
     badgeBg: "bg-blue-500/15",
     badgeText: "text-blue-500 dark:text-blue-400",
+  },
+  user: {
+    icon: MessageSquare,
+    color: "text-purple-500 dark:text-purple-400",
+    bgGradient: "from-purple-500/10 to-purple-500/5",
+    borderColor: "border-purple-500/25",
+    dotColor: "bg-purple-500 dark:bg-purple-400",
+    badgeBg: "bg-purple-500/15",
+    badgeText: "text-purple-500 dark:text-purple-400",
+  },
+  prompt: {
+    icon: MessageSquare,
+    color: "text-violet-500 dark:text-violet-400",
+    bgGradient: "from-violet-500/10 to-violet-500/5",
+    borderColor: "border-violet-500/25",
+    dotColor: "bg-violet-500 dark:bg-violet-400",
+    badgeBg: "bg-violet-500/15",
+    badgeText: "text-violet-500 dark:text-violet-400",
+  },
+  tools: {
+    icon: Wrench,
+    color: "text-green-500 dark:text-green-400",
+    bgGradient: "from-green-500/10 to-green-500/5",
+    borderColor: "border-green-500/25",
+    dotColor: "bg-green-500 dark:bg-green-400",
+    badgeBg: "bg-green-500/15",
+    badgeText: "text-green-500 dark:text-green-400",
+  },
+  agents: {
+    icon: Bot,
+    color: "text-amber-500 dark:text-amber-400",
+    bgGradient: "from-amber-500/10 to-amber-500/5",
+    borderColor: "border-amber-500/25",
+    dotColor: "bg-amber-500 dark:bg-amber-400",
+    badgeBg: "bg-amber-500/15",
+    badgeText: "text-amber-500 dark:text-amber-400",
+  },
+  context: {
+    icon: Layers,
+    color: "text-cyan-500 dark:text-cyan-400",
+    bgGradient: "from-cyan-500/10 to-cyan-500/5",
+    borderColor: "border-cyan-500/25",
+    dotColor: "bg-cyan-500 dark:bg-cyan-400",
+    badgeBg: "bg-cyan-500/15",
+    badgeText: "text-cyan-500 dark:text-cyan-400",
+  },
+  signals: {
+    icon: Bell,
+    color: "text-red-400 dark:text-red-300",
+    bgGradient: "from-red-500/10 to-red-500/5",
+    borderColor: "border-red-400/25",
+    dotColor: "bg-red-400 dark:bg-red-300",
+    badgeBg: "bg-red-400/15",
+    badgeText: "text-red-400 dark:text-red-300",
+  },
+};
+
+const DEFAULT_LIFECYCLE_PHASES: HookLifecyclePhase[] = [
+  {
+    label: "Session",
     events: [
       {
         id: "SessionStart",
@@ -77,13 +152,6 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
   },
   {
     label: "User",
-    icon: MessageSquare,
-    color: "text-purple-500 dark:text-purple-400",
-    bgGradient: "from-purple-500/10 to-purple-500/5",
-    borderColor: "border-purple-500/25",
-    dotColor: "bg-purple-500 dark:bg-purple-400",
-    badgeBg: "bg-purple-500/15",
-    badgeText: "text-purple-500 dark:text-purple-400",
     events: [
       {
         id: "UserPromptSubmit",
@@ -101,13 +169,6 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
   },
   {
     label: "Tools",
-    icon: Wrench,
-    color: "text-green-500 dark:text-green-400",
-    bgGradient: "from-green-500/10 to-green-500/5",
-    borderColor: "border-green-500/25",
-    dotColor: "bg-green-500 dark:bg-green-400",
-    badgeBg: "bg-green-500/15",
-    badgeText: "text-green-500 dark:text-green-400",
     events: [
       {
         id: "PreToolUse",
@@ -131,13 +192,6 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
   },
   {
     label: "Agents",
-    icon: Bot,
-    color: "text-amber-500 dark:text-amber-400",
-    bgGradient: "from-amber-500/10 to-amber-500/5",
-    borderColor: "border-amber-500/25",
-    dotColor: "bg-amber-500 dark:bg-amber-400",
-    badgeBg: "bg-amber-500/15",
-    badgeText: "text-amber-500 dark:text-amber-400",
     events: [
       {
         id: "SubagentStart",
@@ -167,13 +221,6 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
   },
   {
     label: "Context",
-    icon: Layers,
-    color: "text-cyan-500 dark:text-cyan-400",
-    bgGradient: "from-cyan-500/10 to-cyan-500/5",
-    borderColor: "border-cyan-500/25",
-    dotColor: "bg-cyan-500 dark:bg-cyan-400",
-    badgeBg: "bg-cyan-500/15",
-    badgeText: "text-cyan-500 dark:text-cyan-400",
     events: [
       {
         id: "PreCompact",
@@ -185,13 +232,6 @@ const LIFECYCLE_PHASES: LifecyclePhase[] = [
   },
   {
     label: "Signals",
-    icon: Bell,
-    color: "text-red-400 dark:text-red-300",
-    bgGradient: "from-red-500/10 to-red-500/5",
-    borderColor: "border-red-400/25",
-    dotColor: "bg-red-400 dark:bg-red-300",
-    badgeBg: "bg-red-400/15",
-    badgeText: "text-red-400 dark:text-red-300",
     events: [
       {
         id: "Notification",
@@ -219,31 +259,47 @@ interface HookLifecycleDiagramProps {
   onEventClick?: (eventId: string) => void;
   activeEvents?: Set<string>;
   hookCounts?: Record<string, number>;
+  phases?: HookLifecyclePhase[];
+  eventRuntimeRequirements?: Record<string, EventRuntimeRequirement>;
 }
 
 export function HookLifecycleDiagram({
   onEventClick,
   activeEvents,
   hookCounts,
+  phases,
+  eventRuntimeRequirements,
 }: HookLifecycleDiagramProps) {
-  const totalEvents = LIFECYCLE_PHASES.reduce(
+  const lifecyclePhases = phases?.length ? phases : DEFAULT_LIFECYCLE_PHASES;
+  const totalEvents = lifecyclePhases.reduce(
     (sum, phase) => sum + phase.events.length,
     0,
   );
+  const phaseCount = lifecyclePhases.length;
+  const runtimeRequirements =
+    eventRuntimeRequirements ?? EVENT_RUNTIME_REQUIREMENTS;
+
+  let gridColsClass = "lg:grid-cols-6";
+  if (phaseCount <= 2) gridColsClass = "lg:grid-cols-2";
+  else if (phaseCount === 3) gridColsClass = "lg:grid-cols-3";
+  else if (phaseCount === 4) gridColsClass = "lg:grid-cols-4";
+  else if (phaseCount === 5) gridColsClass = "lg:grid-cols-5";
 
   return (
     <section className="space-y-2">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-medium">Hook Lifecycle</h3>
         <span className="text-xs text-muted-foreground">
-          {totalEvents} events across 6 phases
+          {totalEvents} events across {phaseCount} phases
         </span>
       </div>
 
-      {/* Responsive grid: 2 cols mobile, 3 cols tablet, 6 cols desktop */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {LIFECYCLE_PHASES.map((phase, phaseIdx) => {
-            const Icon = phase.icon;
+      {/* Responsive grid: 2 cols mobile, configurable desktop columns */}
+      <div className={`grid grid-cols-2 sm:grid-cols-3 ${gridColsClass} gap-3`}>
+          {lifecyclePhases.map((phase, phaseIdx) => {
+            const style =
+              PHASE_STYLE_BY_LABEL[phase.label.toLowerCase()] ?? DEFAULT_PHASE_STYLE;
+            const Icon = style.icon;
             return (
               <div key={phase.label} className="relative">
                 {/* Arrow separator — only visible on lg when all 6 are in one row */}
@@ -255,12 +311,12 @@ export function HookLifecycleDiagram({
 
                 {/* Phase card */}
                 <div
-                  className={`rounded-xl border ${phase.borderColor} bg-gradient-to-b ${phase.bgGradient} p-3 flex flex-col h-full`}
+                  className={`rounded-xl border ${style.borderColor} bg-gradient-to-b ${style.bgGradient} p-3 flex flex-col h-full`}
                 >
                   {/* Phase header */}
                   <div className="flex items-center gap-1.5 mb-2.5">
-                    <Icon size={14} className={phase.color} />
-                    <span className={`text-xs font-semibold ${phase.color}`}>
+                    <Icon size={14} className={style.color} />
+                    <span className={`text-xs font-semibold ${style.color}`}>
                       {phase.label}
                     </span>
                   </div>
@@ -270,7 +326,7 @@ export function HookLifecycleDiagram({
                     {phase.events.map((evt, evtIdx) => {
                       const isActive = activeEvents?.has(evt.id);
                       const count = hookCounts?.[evt.id];
-                      const runtime = EVENT_RUNTIME_REQUIREMENTS[evt.id];
+                      const runtime = runtimeRequirements[evt.id];
 
                       return (
                         <div key={evt.id} className="flex flex-col gap-1.5">
@@ -289,7 +345,7 @@ export function HookLifecycleDiagram({
                             onClick={() => onEventClick?.(evt.id)}
                             className={`group relative rounded-lg border px-2.5 py-1.5 text-left transition-all ${
                               isActive
-                                ? `${phase.borderColor} bg-background shadow-sm hover:shadow-md`
+                                ? `${style.borderColor} bg-background shadow-sm hover:shadow-md`
                                 : "border-transparent opacity-60 hover:opacity-100 hover:bg-background/50 hover:border-border/50"
                             }`}
                           >
@@ -298,10 +354,10 @@ export function HookLifecycleDiagram({
                               {isActive && (
                                 <span className="relative flex h-2 w-2 shrink-0">
                                   <span
-                                    className={`absolute inline-flex h-full w-full rounded-full ${phase.dotColor} opacity-75 animate-ping`}
+                                    className={`absolute inline-flex h-full w-full rounded-full ${style.dotColor} opacity-75 animate-ping`}
                                   />
                                   <span
-                                    className={`relative inline-flex rounded-full h-2 w-2 ${phase.dotColor}`}
+                                    className={`relative inline-flex rounded-full h-2 w-2 ${style.dotColor}`}
                                   />
                                 </span>
                               )}
@@ -311,7 +367,7 @@ export function HookLifecycleDiagram({
                               {/* Count badge */}
                               {count != null && count > 0 && (
                                 <span
-                                  className={`ml-auto text-[10px] font-semibold rounded-full px-1.5 py-0 leading-4 ${phase.badgeBg} ${phase.badgeText}`}
+                                  className={`ml-auto text-[10px] font-semibold rounded-full px-1.5 py-0 leading-4 ${style.badgeBg} ${style.badgeText}`}
                                 >
                                   {count}
                                 </span>

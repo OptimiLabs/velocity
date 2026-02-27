@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 export async function POST(req: NextRequest) {
   try {
@@ -32,14 +32,23 @@ export async function POST(req: NextRequest) {
     }
 
     const platform = process.platform;
+    const normalizedAbsPath =
+      platform === "win32" ? path.win32.normalize(absPath) : absPath;
 
     if (platform === "darwin") {
-      execSync(`open -R "${absPath}"`);
+      execFileSync("open", ["-R", normalizedAbsPath], {
+        stdio: "ignore",
+      });
     } else if (platform === "win32") {
-      execSync(`explorer /select,"${absPath}"`);
+      execFileSync("explorer", ["/select,", normalizedAbsPath], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
     } else {
       // Linux: open the parent directory
-      execSync(`xdg-open "${path.dirname(absPath)}"`);
+      execFileSync("xdg-open", [path.dirname(normalizedAbsPath)], {
+        stdio: "ignore",
+      });
     }
 
     return NextResponse.json({ success: true });

@@ -1,6 +1,6 @@
 {
   "name": "velocity",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first workspace for Claude Code, Codex CLI, and Gemini CLI with sessions, analytics, workflows, and tools",
   "author": "jaewon42",
   "license": "AGPL-3.0-or-later",
@@ -27,11 +27,15 @@
     "sqlite"
   ],
   "scripts": {
-    "dev": "next dev",
+    "dev": "bun run scripts/dev.ts",
+    "dev:next": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "watcher": "tsx scripts/start-watcher.ts",
+    "demo:seed": "tsx scripts/demo/seed-demo-data.ts",
+    "demo:capture": "python3 scripts/demo/capture-demos.py",
+    "demo:media": "bun run demo:seed && bun run demo:capture",
     "test": "vitest run",
     "test:watch": "vitest"
   },

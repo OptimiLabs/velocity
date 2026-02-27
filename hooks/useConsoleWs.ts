@@ -4,7 +4,13 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import { dispatchPtyMessage } from "@/lib/console/terminal-registry";
 import { findTerminalForSession } from "@/lib/console/layout-queries";
+import {
+  inferProviderFromCommand,
+  inferProviderFromModel,
+} from "@/lib/console/cli-launch";
 import type { ConsoleSession, SessionGroup } from "@/types/console";
+import type { ConfigProvider } from "@/types/provider";
+import { toast } from "sonner";
 
 export interface UseConsoleWsConfig {
   sessionsRef: React.MutableRefObject<Map<string, ConsoleSession>>;
@@ -28,6 +34,7 @@ export interface UseConsoleWsConfig {
 export interface UseConsoleWsResult {
   wsRef: React.MutableRefObject<WebSocket | null>;
   wsVersion: number;
+  wsState: "connecting" | "connected" | "reconnecting" | "disconnected";
   safeSend: (data: Record<string, unknown>) => boolean;
 }
 
@@ -60,9 +67,15 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
   const reconnectDelayRef = useRef(1000);
+  const everConnectedRef = useRef(false);
+  const disconnectToastShownRef = useRef(false);
+  const lastToastAtRef = useRef(0);
   const terminalOwnershipRef = useRef<Map<string, TerminalOwnership>>(new Map());
   const terminalActivityLookupRef = useRef<Map<string, number>>(new Map());
   const [wsVersion, setWsVersion] = useState(0);
+  const [wsState, setWsState] = useState<
+    "connecting" | "connected" | "reconnecting" | "disconnected"
+  >("connecting");
 
   const safeSend = useCallback((data: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -81,10 +94,44 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
       const rs = wsRef.current?.readyState;
       if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
 
+      setWsState(everConnectedRef.current ? "reconnecting" : "connecting");
       const wsPort = process.env.NEXT_PUBLIC_WS_PORT || "3001";
       const wsUrl = `ws://${window.location.hostname}:${wsPort}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+
+      const syncActiveTerminalsToServer = (): boolean => {
+        const layoutState = useConsoleLayoutStore.getState();
+        if (!layoutState._hydrated) return false;
+
+        const terminalIds = new Set<string>();
+        for (const group of Object.values(layoutState.groups)) {
+          for (const terminalId of Object.keys(group.terminals ?? {})) {
+            terminalIds.add(terminalId);
+          }
+        }
+        if (terminalIds.size === 0) {
+          for (const terminalId of Object.keys(layoutState.terminals)) {
+            terminalIds.add(terminalId);
+          }
+        }
+        if (ws.readyState !== WebSocket.OPEN) return true;
+        ws.send(
+          JSON.stringify({
+            type: "pty:sync-active",
+            terminalIds: [...terminalIds],
+          }),
+        );
+        return true;
+      };
+
+      const scheduleActiveTerminalSync = (attempt = 0) => {
+        if (!mountedRef.current || wsRef.current !== ws) return;
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (syncActiveTerminalsToServer()) return;
+        if (attempt >= 20) return;
+        setTimeout(() => scheduleActiveTerminalSync(attempt + 1), 200);
+      };
 
       const connectTimeout = setTimeout(() => {
         if (ws.readyState === WebSocket.CONNECTING) {
@@ -95,6 +142,16 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
       ws.onopen = () => {
         clearTimeout(connectTimeout);
         reconnectDelayRef.current = 1000;
+        everConnectedRef.current = true;
+        setWsState("connected");
+        if (disconnectToastShownRef.current) {
+          const now = Date.now();
+          if (now - lastToastAtRef.current > 1_000) {
+            toast.success("WebSocket reconnected. Live console features restored.");
+            lastToastAtRef.current = now;
+          }
+          disconnectToastShownRef.current = false;
+        }
         wsEpochRef.current += 1;
         wsConnectCountRef.current += 1;
         setWsVersion((v) => v + 1);
@@ -118,6 +175,10 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
             }),
           );
         }
+
+        // Reconcile server-side persisted terminals (tmux-backed sessions) with
+        // the terminal IDs currently tracked by layout state.
+        scheduleActiveTerminalSync();
       };
 
       ws.onmessage = (event) => {
@@ -197,6 +258,17 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
         if (wsRef.current !== ws) return;
 
         wsRef.current = null;
+        setWsState("reconnecting");
+        if (everConnectedRef.current && !disconnectToastShownRef.current) {
+          const now = Date.now();
+          if (now - lastToastAtRef.current > 5_000) {
+            toast.warning(
+              "WebSocket disconnected. Console live actions are paused while reconnecting.",
+            );
+            lastToastAtRef.current = now;
+          }
+          disconnectToastShownRef.current = true;
+        }
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
@@ -217,10 +289,11 @@ export function useConsoleWs(config: UseConsoleWsConfig): UseConsoleWsResult {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       wsRef.current?.close();
+      setWsState("disconnected");
     };
   }, []);
 
-  return { wsRef, wsVersion, safeSend };
+  return { wsRef, wsVersion, wsState, safeSend };
 }
 
 // --- Message handlers (extracted for readability) ---
@@ -243,6 +316,7 @@ function handleResumableGroups(
   >,
 ) {
   const serverGroupIds = new Set<string>();
+  let mergedGroupsSnapshot = groupsRef.current;
   setGroups((prev) => {
     const next = new Map(prev);
     let changed = false;
@@ -269,20 +343,21 @@ function handleResumableGroups(
         });
       }
     }
+    mergedGroupsSnapshot = changed ? next : prev;
     return changed ? next : prev;
   });
+  groupsRef.current = mergedGroupsSnapshot;
 
   // Sync layout store with hook groups
   queueMicrotask(() => {
-    const layoutStore = useConsoleLayoutStore.getState();
-    const mergedGroups = groupsRef.current;
-    for (const gid of Object.keys(layoutStore.groups)) {
+    const mergedGroups = mergedGroupsSnapshot;
+    for (const gid of Object.keys(useConsoleLayoutStore.getState().groups)) {
       if (!mergedGroups.has(gid)) {
         useConsoleLayoutStore.getState().removeGroup(gid);
       }
     }
     for (const gid of mergedGroups.keys()) {
-      if (!layoutStore.groups[gid]) {
+      if (!useConsoleLayoutStore.getState().groups[gid]) {
         useConsoleLayoutStore.getState().ensureGroup(gid);
       }
     }
@@ -318,6 +393,17 @@ function handleResumableSessions(
     const match = findTerminalForSession(sid);
     const tid = match.terminalId;
     if (tid) {
+      const providerFromPayload =
+        (s.provider as ConfigProvider | undefined) ?? undefined;
+      const provider =
+        providerFromPayload ??
+        inferProviderFromCommand(match.meta?.command) ??
+        inferProviderFromModel(
+          (match.meta?.model as string | null | undefined) ??
+            (s.model as string | null | undefined) ??
+            null,
+        ) ??
+        "claude";
       const resolvedGroupId = match.groupId ?? (s.groupId as string) ?? undefined;
       const inferredStatus =
         match.meta?.terminalState !== "exited" &&
@@ -330,8 +416,12 @@ function handleResumableSessions(
         cwd: s.cwd as string,
         status: inferredStatus,
         kind: "claude",
+        provider,
         createdAt: s.createdAt as number,
-        claudeSessionId: (s.claudeSessionId as string) ?? undefined,
+        claudeSessionId:
+          provider === "claude"
+            ? ((s.claudeSessionId as string) ?? undefined)
+            : undefined,
         manuallyRenamed: s.manuallyRenamed as boolean | undefined,
         lastActivityAt: (s.lastActivityAt as number) ?? undefined,
         groupId: resolvedGroupId,
@@ -353,12 +443,24 @@ function handleResumableSessions(
   }
 
   if (additions.length > 0) {
+    // Keep the ref updated synchronously before orphan pruning runs.
+    const optimisticMerged = new Map(existing);
+    for (const session of additions) {
+      optimisticMerged.set(session.id, session);
+    }
+    sessionsRef.current = optimisticMerged;
     setSessions((prev) => {
       const next = new Map(prev);
+      let changed = false;
       for (const session of additions) {
-        next.set(session.id, session);
+        if (!next.has(session.id)) {
+          next.set(session.id, session);
+          changed = true;
+        }
       }
-      return next;
+      const resolved = changed ? next : prev;
+      sessionsRef.current = resolved;
+      return resolved;
     });
   }
   for (const id of orphanIds) {
@@ -561,3 +663,8 @@ function resolveTerminalOwnership(
 
   return undefined;
 }
+
+export const __testables = {
+  handleResumableGroups,
+  handleResumableSessions,
+};

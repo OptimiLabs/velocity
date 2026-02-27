@@ -29,7 +29,8 @@ beforeAll(() => {
       input_tokens, output_tokens, cache_read_tokens, total_cost, created_at, modified_at, jsonl_path)
     VALUES
       ('s1', 'p1', 'test', 'Hello', 10, 5, 5000, 2000, 1000, 0.15, '2025-01-01T10:00:00Z', '2025-01-01T11:00:00Z', '/test/s1.jsonl'),
-      ('s2', 'p1', 'test2', 'World', 20, 10, 10000, 4000, 2000, 0.30, '2025-01-02T10:00:00Z', '2025-01-02T12:00:00Z', '/test/s2.jsonl');
+      ('s2', 'p1', 'test2', 'World', 20, 10, 10000, 4000, 2000, 0.30, '2025-01-02T10:00:00Z', '2025-01-02T12:00:00Z', '/test/s2.jsonl'),
+      ('s0', 'p1', 'zero', 'No messages', 0, 0, 9999, 9999, 9999, 9.99, '2025-01-02T13:00:00Z', '2025-01-02T13:01:00Z', '/test/s0.jsonl');
   `);
 });
 
@@ -76,6 +77,18 @@ describe("Analytics API", () => {
       expect(data.totals.total_sessions).toBe(1);
       expect(data.previousTotals.total_sessions).toBe(1);
       expect(data.previousTotals.total_messages).toBe(10);
+    });
+
+    it("excludes zero-message sessions from totals and distribution", async () => {
+      const { GET } = await import("@/app/api/analytics/route");
+      const req = new Request(
+        "http://localhost/api/analytics?from=2025-01-01&to=2025-01-03",
+      );
+      const res = await GET(req);
+      const data = await res.json();
+
+      expect(data.totals.total_sessions).toBe(2);
+      expect(data.totals.total_cost).toBeCloseTo(0.45, 8);
     });
   });
 

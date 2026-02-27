@@ -6,6 +6,7 @@ import { archiveScrollback } from "@/lib/console/terminal-db";
 import { formatGroupTimestamp } from "@/lib/console/claude-args";
 import { deleteActivity } from "@/lib/console/activity-tracker";
 import { persistGroups } from "@/lib/console/session-persistence";
+import { findLeafByContent } from "@/lib/console/pane-tree";
 import type { ConsoleSession, SessionGroup } from "@/types/console";
 
 export interface UseSessionGroupsConfig {
@@ -141,10 +142,41 @@ export function useSessionGroups(
         .filter((s) => s.groupId === groupId)
         .sort((a, b) => b.createdAt - a.createdAt);
       if (groupSessions.length > 0) {
-        setActiveId(groupSessions[0].id);
-        useConsoleLayoutStore
-          .getState()
-          .setActiveSessionId(groupSessions[0].id);
+        const preferred =
+          groupSessions.find((s) => s.status === "active" && !!s.terminalId) ??
+          groupSessions.find((s) => !!s.terminalId) ??
+          groupSessions[0];
+        setActiveId(preferred.id);
+        const nextStore = useConsoleLayoutStore.getState();
+        nextStore.setActiveSessionId(preferred.id);
+        const freshGroup = nextStore.groups[groupId];
+        if (freshGroup) {
+          const terminalLeaf = findLeafByContent(freshGroup.paneTree, (c) => {
+            if (c.type !== "terminal") return false;
+            const meta = freshGroup.terminals[c.terminalId];
+            return meta?.sessionId === preferred.id;
+          });
+          if (terminalLeaf) {
+            nextStore.setActivePaneId(terminalLeaf.id);
+            nextStore.setFocusedPane(terminalLeaf.id);
+          }
+        }
+        nextStore.requestActiveTerminalFocus();
+      } else {
+        // Group may still contain terminal leaves without mapped sessions.
+        const nextStore = useConsoleLayoutStore.getState();
+        const freshGroup = nextStore.groups[groupId];
+        if (freshGroup) {
+          const firstTerminalLeaf = findLeafByContent(
+            freshGroup.paneTree,
+            (c) => c.type === "terminal",
+          );
+          if (firstTerminalLeaf) {
+            nextStore.setActivePaneId(firstTerminalLeaf.id);
+            nextStore.setFocusedPane(firstTerminalLeaf.id);
+            nextStore.requestActiveTerminalFocus();
+          }
+        }
       }
     },
     [groups, sessions, setGroups, setActiveId],

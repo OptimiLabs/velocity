@@ -283,6 +283,34 @@ describe("aggregateSession", () => {
     expect(stats.effortMode).toBe("medium");
   });
 
+  it("captures first prompt, git branch, and project path hints", async () => {
+    const jsonlPath = writeFixture([
+      {
+        type: "meta",
+        uuid: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        data: {
+          git: { branch: "feature/session-metadata" },
+          cwd: "/Users/test/workspace/project-a",
+        },
+      },
+      createMockHumanMessage("Please summarize this repository state."),
+      createMockJsonlMessage({
+        message: {
+          role: "assistant",
+          content: "Done",
+          model: "claude-sonnet-4-5-20250929",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ]);
+
+    const stats = await aggregateSession(jsonlPath);
+    expect(stats.firstPrompt).toBe("Please summarize this repository state.");
+    expect(stats.gitBranch).toBe("feature/session-metadata");
+    expect(stats.projectPath).toBe("/Users/test/workspace/project-a");
+  });
+
   it("handles empty file", async () => {
     const jsonlPath = writeFixture([]);
     const stats = await aggregateSession(jsonlPath);

@@ -27,6 +27,51 @@ import {
   writeAppSettings,
 } from "@/lib/app-settings";
 
+const APP_COMPAT_KEYS = new Set([
+  "autoArchiveDays",
+  "disableHeaderView",
+  "sessionAutoLoadAll",
+  "orphanTimeoutMs",
+  "generationRuntime",
+  "generationModel",
+  "generationThinkingLevel",
+  "generationDefaults",
+  "codexCliEnabled",
+  "geminiCliEnabled",
+]);
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractAppCompatPatch(
+  partial: Record<string, unknown>,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(partial)) {
+    if (!APP_COMPAT_KEYS.has(key)) continue;
+    patch[key] = value;
+  }
+  return patch;
+}
+
+function mergeAppSettingsPatch(
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...current, ...patch };
+  if (
+    isObjectRecord(current.generationDefaults) &&
+    isObjectRecord(patch.generationDefaults)
+  ) {
+    next.generationDefaults = {
+      ...current.generationDefaults,
+      ...patch.generationDefaults,
+    };
+  }
+  return next;
+}
+
 // Provider-specific settings readers/writers — avoids if/else branching
 type ProviderSettingsHandler = {
   read: () => Record<string, unknown>;
@@ -157,7 +202,11 @@ export async function GET(request: Request) {
     }
 
     const settings = readSettings();
-    return NextResponse.json(settings);
+    const appSettings = readAppSettings();
+    return NextResponse.json({
+      ...settings,
+      ...appSettings,
+    });
   } catch {
     return NextResponse.json(
       { error: "Failed to read settings" },
@@ -249,6 +298,12 @@ export async function PUT(request: Request) {
       writeProjectSettings(cwd, merged);
     } else {
       writeSettings(merged);
+      const appPatch = extractAppCompatPatch(partial);
+      if (Object.keys(appPatch).length > 0) {
+        const currentApp = readAppSettings() as Record<string, unknown>;
+        const nextApp = mergeAppSettingsPatch(currentApp, appPatch);
+        writeAppSettings(nextApp);
+      }
     }
     return NextResponse.json({ success: true });
   } catch {

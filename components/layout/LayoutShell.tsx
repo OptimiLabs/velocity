@@ -7,6 +7,7 @@ import { Header } from "./Header";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useRoutingStore } from "@/stores/routingStore";
 import { useWorkflowBuilderLayoutStore } from "@/stores/workflowBuilderLayoutStore";
+import { useConsoleViewStore } from "@/stores/consoleViewStore";
 
 const STORAGE_KEY = "claude-sidebar-collapsed";
 
@@ -21,9 +22,13 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const setWorkflowFullscreen = useWorkflowBuilderLayoutStore(
     (s) => s.setFullscreen,
   );
+  const consoleFullscreen = useConsoleViewStore((s) => s.isFullscreen);
+  const setConsoleFullscreen = useConsoleViewStore((s) => s.setFullscreen);
+  const isConsoleRoute = pathname === "/";
   const isRoutingRoute = pathname.startsWith("/routing");
   const isWorkflowBuilderRoute = /^\/workflows\/[^/]+$/.test(pathname);
   const hideChrome =
+    (isConsoleRoute && consoleFullscreen) ||
     (isRoutingRoute && routingFullscreen) ||
     (isWorkflowBuilderRoute && workflowFullscreen);
 
@@ -56,6 +61,12 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [toggle]);
+
+  useEffect(() => {
+    if (!isConsoleRoute && consoleFullscreen) {
+      setConsoleFullscreen(false);
+    }
+  }, [isConsoleRoute, consoleFullscreen, setConsoleFullscreen]);
 
   useEffect(() => {
     if (!isRoutingRoute && routingFullscreen) {

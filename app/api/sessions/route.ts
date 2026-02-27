@@ -3,6 +3,7 @@ import { getDb, ensureIndexed } from "@/lib/db";
 import { deleteSessionsWithCleanup } from "@/lib/db/session-deletion";
 import { jsonWithCache } from "@/lib/api/cache-headers";
 import { buildProviderFilter } from "@/lib/api/provider-filter";
+import { refreshProjectAggregates } from "@/lib/db/project-aggregates";
 import fs from "fs";
 
 interface SessionRow {
@@ -27,7 +28,8 @@ const SORT_COLUMNS: Record<string, string> = {
   created_at: "s.created_at",
   cost: "s.total_cost",
   messages: "s.message_count",
-  tokens: "(s.input_tokens + s.output_tokens)",
+  tokens:
+    "(s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens)",
   input: "s.input_tokens",
   output: "s.output_tokens",
   cache_read: "s.cache_read_tokens",
@@ -236,7 +238,15 @@ export async function GET(request: Request) {
       SELECT p.*,
         COUNT(s.id) as session_count,
         COALESCE(SUM(s.total_cost), 0) as total_cost,
-        COALESCE(SUM(s.input_tokens + s.output_tokens), 0) as total_tokens
+        COALESCE(
+          SUM(
+            s.input_tokens +
+              s.output_tokens +
+              s.cache_read_tokens +
+              s.cache_write_tokens
+          ),
+          0
+        ) as total_tokens
       FROM projects p
       LEFT JOIN sessions s ON s.project_id = p.id AND s.message_count > 0
         ${
@@ -599,10 +609,13 @@ export async function PATCH(request: Request) {
     uniqueIds.length > 0
       ? updateTx(uniqueIds)
       : updateFromDateTx(fromDate!, projectId, provider);
+  const projectAggregates =
+    updated > 0 ? refreshProjectAggregates({ activeOnly: true }) : null;
   return NextResponse.json({
     success: true,
     action,
     updated,
+    ...(projectAggregates ? { projectAggregates } : {}),
     ...(uniqueIds.length > 0
       ? { mode: "ids" as const }
       : { mode: "fromDate" as const, fromDate }),

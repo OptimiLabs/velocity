@@ -33,7 +33,12 @@ import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "@/types/agent";
 import type { ConfigProvider } from "@/types/provider";
-import type { WorkflowNodeOverrides, WorkflowScopedAgent } from "@/types/workflow";
+import type {
+  Workflow,
+  WorkflowNode,
+  WorkflowNodeOverrides,
+  WorkflowScopedAgent,
+} from "@/types/workflow";
 import { scopedAgentToAgent } from "@/lib/agents/workflow-agent-utils";
 import type { Edge } from "@xyflow/react";
 import { generateInstanceId, parseInstanceId } from "@/lib/workflow/instance";
@@ -44,10 +49,7 @@ import {
   ChevronRight,
   Terminal,
   Save,
-  Pencil,
   Copy,
-  ArrowUpFromLine,
-  PanelLeftClose,
   Trash2,
   Loader2,
   X,
@@ -56,6 +58,7 @@ import {
   ChevronUp,
   Maximize2,
   Minimize2,
+  Merge,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -78,6 +81,24 @@ interface WorkflowCanvasBuilderProps {
   workflowId: string;
 }
 
+const EMPTY_AGENTS: Agent[] = [];
+const EMPTY_WORKFLOWS: Workflow[] = [];
+type CanvasEdge = { id: string; source: string; target: string };
+
+function areCanvasEdgesEquivalent(prev: CanvasEdge[], next: CanvasEdge[]) {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    if (
+      prev[i].id !== next[i].id ||
+      prev[i].source !== next[i].source ||
+      prev[i].target !== next[i].target
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function WorkflowCanvasBuilder({
   workflowId,
 }: WorkflowCanvasBuilderProps) {
@@ -87,8 +108,10 @@ export function WorkflowCanvasBuilder({
 
   // Data
   const { data: workflow, isLoading } = useWorkflow(workflowId);
-  const { data: agents = [] } = useAgents(providerScope);
-  const { data: workflows = [] } = useWorkflows();
+  const agentsQuery = useAgents(providerScope);
+  const workflowsQuery = useWorkflows();
+  const agents = agentsQuery.data ?? EMPTY_AGENTS;
+  const workflows = workflowsQuery.data ?? EMPTY_WORKFLOWS;
   const deleteWorkflow = useDeleteWorkflow();
   const updateWorkflow = useUpdateWorkflow();
   const generateWorkflow = useGenerateWorkflow();
@@ -384,7 +407,11 @@ export function WorkflowCanvasBuilder({
         });
       } catch (err) {
         console.error("[workflow-gen] Intent processing failed:", err);
-        toast.error("Failed to generate workflow");
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : "Failed to generate workflow";
+        toast.error(message);
         // Clean up the empty skeleton so it doesn't pollute the list
         deleteWorkflow.mutate(workflowId, {
           onSuccess: () => router.push("/workflows"),
@@ -408,7 +435,18 @@ export function WorkflowCanvasBuilder({
   const [convertOpen, setConvertOpen] = useState(false);
 
   // Canvas edges
-  const [canvasEdges, setCanvasEdges] = useState<Edge[]>([]);
+  const [canvasEdges, setCanvasEdges] = useState<CanvasEdge[]>([]);
+
+  // Seed canvas edge state from persisted workflow edges so counters/save dialogs
+  // stay correct even before the graph is manually edited.
+  useEffect(() => {
+    const next = (workflow?.edges ?? []).map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+    }));
+    setCanvasEdges((prev) => (areCanvasEdgesEquivalent(prev, next) ? prev : next));
+  }, [workflow?.edges]);
 
   // Multi-select
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -633,6 +671,36 @@ export function WorkflowCanvasBuilder({
     [addToWorkspace, setSelected, workspaceAgents],
   );
 
+  const handleEditWorkspaceAgentFromCanvas = useCallback(
+    (name: string, nodeId?: string) => {
+      const normalizedName = parseInstanceId(name);
+      const targetId =
+        (nodeId && workspaceAgents.includes(nodeId) ? nodeId : undefined) ??
+        workspaceAgents.find((id) => parseInstanceId(id) === normalizedName);
+      if (!targetId) return;
+      setSelected("agent", targetId);
+      setDetailMode("edit");
+      setRightOpen(layoutMode, true);
+    },
+    [layoutMode, setDetailMode, setRightOpen, setSelected, workspaceAgents],
+  );
+
+  const handleDuplicateWorkspaceAgentFromCanvas = useCallback(
+    (name: string, nodeId?: string) => {
+      const normalizedName = parseInstanceId(name);
+      const targetId =
+        (nodeId && workspaceAgents.includes(nodeId) ? nodeId : undefined) ??
+        workspaceAgents.find((id) => parseInstanceId(id) === normalizedName);
+      if (!targetId) return;
+      const sourceAgent = workspaceAgentsList.find(
+        (agent) => agent.instanceId === targetId,
+      );
+      if (!sourceAgent) return;
+      handleDuplicateWorkspaceAgent(sourceAgent, targetId);
+    },
+    [handleDuplicateWorkspaceAgent, workspaceAgents, workspaceAgentsList],
+  );
+
   const handleRemoveFromWorkspace = useCallback(
     (instanceId: string) => {
       removeFromWorkspace(instanceId);
@@ -733,8 +801,302 @@ export function WorkflowCanvasBuilder({
     clearSelected();
   }, [selectedNodeIds, removeFromWorkspace, setCanvasEdges, clearSelected]);
 
+  const handleMergeSelected = useCallback(async () => {
+    if (!workflow) return;
+
+    const selectedSet = new Set(selectedNodeIds);
+    if (selectedSet.size < 2) {
+      toast.error("Select at least 2 workflow nodes to merge");
+      return;
+    }
+
+    const selectedAgents = workspaceAgentsList.filter((agent) =>
+      selectedSet.has(agent.instanceId),
+    );
+    if (selectedAgents.length < 2) {
+      toast.error("Select at least 2 workflow nodes to merge");
+      return;
+    }
+
+    const knownNames = new Set([
+      ...agents.map((agent) => agent.name),
+      ...(workflow.scopedAgents ?? []).map((agent) => agent.name),
+    ]);
+    const baseName = parseInstanceId(selectedAgents[0].instanceId);
+    let mergedName = `${baseName}-merged`;
+    let suffix = 2;
+    while (knownNames.has(mergedName)) {
+      mergedName = `${baseName}-merged-${suffix}`;
+      suffix += 1;
+    }
+    const mergedNodeId = generateInstanceId(mergedName);
+
+    const workflowNodeMap = new Map(workflow.nodes.map((node) => [node.id, node]));
+    let positions: Record<string, { x: number; y: number }> = {};
+    try {
+      positions = JSON.parse(
+        localStorage.getItem("agent-canvas-positions") || "{}",
+      ) as Record<string, { x: number; y: number }>;
+    } catch {
+      // Ignore malformed localStorage payloads.
+    }
+
+    const allCurrentNodes: WorkflowNode[] = workspaceAgentsList.map((agent, index) => {
+      const existing = workflowNodeMap.get(agent.instanceId);
+      const position = positions[agent.instanceId] ?? existing?.position ?? {
+        x: (index % 4) * 240,
+        y: Math.floor(index / 4) * 180,
+      };
+      return {
+        id: agent.instanceId,
+        label: existing?.label ?? agent.name,
+        taskDescription:
+          existing?.taskDescription ??
+          agent.description ??
+          `Run ${agent.name} as part of this workflow`,
+        agentName: agent.name,
+        model: existing?.model ?? agent.model,
+        effort: existing?.effort ?? agent.effort,
+        skills: existing?.skills ?? agent.skills,
+        status: existing?.status ?? "ready",
+        position,
+        dependsOn: existing?.dependsOn ?? [],
+        overrides: existing?.overrides,
+      };
+    });
+    const nodeById = new Map(allCurrentNodes.map((node) => [node.id, node]));
+    const selectedNodes = selectedNodeIds
+      .map((id) => nodeById.get(id))
+      .filter(Boolean) as WorkflowNode[];
+    if (selectedNodes.length < 2) {
+      toast.error("Unable to resolve selected nodes for merge");
+      return;
+    }
+
+    const edgeSource = canvasEdges
+      .filter(
+        (edge) =>
+          nodeById.has(edge.source) &&
+          nodeById.has(edge.target) &&
+          edge.source !== edge.target,
+      )
+      .map((edge) => ({
+        id: edge.id || `e-${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+      }));
+    const rewiredEdges: { id: string; source: string; target: string }[] = [];
+    const seenEdges = new Set<string>();
+    for (const edge of edgeSource) {
+      const sourceSelected = selectedSet.has(edge.source);
+      const targetSelected = selectedSet.has(edge.target);
+      if (sourceSelected && targetSelected) continue;
+
+      const source = sourceSelected ? mergedNodeId : edge.source;
+      const target = targetSelected ? mergedNodeId : edge.target;
+      if (source === target) continue;
+
+      const key = `${source}=>${target}`;
+      if (seenEdges.has(key)) continue;
+      seenEdges.add(key);
+      rewiredEdges.push({
+        id:
+          sourceSelected || targetSelected
+            ? `e-${source}-${target}`
+            : edge.id,
+        source,
+        target,
+      });
+    }
+
+    const selectedPosition = selectedNodes.reduce(
+      (acc, node) => {
+        acc.x += node.position.x;
+        acc.y += node.position.y;
+        return acc;
+      },
+      { x: 0, y: 0 },
+    );
+    const mergedPosition = {
+      x: Math.round(selectedPosition.x / selectedNodes.length),
+      y: Math.round(selectedPosition.y / selectedNodes.length),
+    };
+
+    const effortRank: Record<"low" | "medium" | "high", number> = {
+      low: 1,
+      medium: 2,
+      high: 3,
+    };
+    const mergedEffort = selectedAgents.reduce<
+      "low" | "medium" | "high" | undefined
+    >((best, current) => {
+      if (!current.effort) return best;
+      if (!best) return current.effort;
+      return effortRank[current.effort] > effortRank[best] ? current.effort : best;
+    }, undefined);
+    const mergedTools = Array.from(
+      new Set(selectedAgents.flatMap((agent) => agent.tools ?? [])),
+    );
+    const mergedDisallowedTools = Array.from(
+      new Set(selectedAgents.flatMap((agent) => agent.disallowedTools ?? [])),
+    );
+    const mergedSkills = Array.from(
+      new Set([
+        ...selectedAgents.flatMap((agent) => agent.skills ?? []),
+        ...selectedNodes.flatMap((node) => node.skills ?? []),
+      ]),
+    );
+    const mergedModelValues = selectedAgents
+      .map((agent) => agent.model)
+      .filter((value): value is string => !!value);
+    const mergedModel =
+      mergedModelValues.length > 0 &&
+      mergedModelValues.every((value) => value === mergedModelValues[0])
+        ? mergedModelValues[0]
+        : undefined;
+    const sharedCategory = selectedAgents.every(
+      (agent) => agent.category === selectedAgents[0].category,
+    )
+      ? selectedAgents[0].category
+      : undefined;
+    const mergedDescription = `Merged from: ${selectedAgents
+      .map((agent) => agent.name)
+      .join(", ")}`;
+    const mergedPromptSections = selectedAgents
+      .map(
+        (agent, index) =>
+          `## Source ${index + 1}: ${agent.name}\n\n${
+            agent.prompt?.trim() || "(No prompt provided)"
+          }`,
+      )
+      .join("\n\n");
+    const mergedTaskSections = selectedNodes
+      .map(
+        (node, index) =>
+          `${index + 1}. ${node.label || parseInstanceId(node.id)}: ${node.taskDescription}`,
+      )
+      .join("\n");
+    const mergedPrompt = `You are a merged workflow agent composed from multiple source agents.\nUse the workflow task summary first, then pull the most relevant instructions from the source sections.\nAvoid duplicate work and keep outputs concise.\n\n## Workflow task summary\n${mergedTaskSections}\n\n${mergedPromptSections}`;
+
+    const remainingNodes = allCurrentNodes.filter((node) => !selectedSet.has(node.id));
+    const mergedNode: WorkflowNode = {
+      id: mergedNodeId,
+      label: mergedName,
+      taskDescription: mergedDescription,
+      agentName: mergedName,
+      model: mergedModel,
+      effort: mergedEffort,
+      skills: mergedSkills,
+      status: "ready",
+      position: mergedPosition,
+      dependsOn: [],
+    };
+    const nodesWithMerged = [...remainingNodes, mergedNode];
+    const incoming = new Map<string, Set<string>>();
+    for (const edge of rewiredEdges) {
+      if (!incoming.has(edge.target)) {
+        incoming.set(edge.target, new Set<string>());
+      }
+      incoming.get(edge.target)!.add(edge.source);
+    }
+    const nextNodes = nodesWithMerged.map((node) => ({
+      ...node,
+      dependsOn: Array.from(incoming.get(node.id) ?? []),
+    }));
+
+    let createdScopedAgent = false;
+    try {
+      const upsertRes = await fetch(`/api/workflows/${workflowId}/agents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: mergedName,
+          description: mergedDescription,
+          model: mergedModel,
+          effort: mergedEffort,
+          tools: mergedTools,
+          disallowedTools: mergedDisallowedTools,
+          category: sharedCategory,
+          prompt: mergedPrompt,
+          skills: mergedSkills,
+        }),
+      });
+      if (!upsertRes.ok) throw new Error("Failed to create merged workflow agent");
+      createdScopedAgent = true;
+
+      const updatedWorkflow = await updateWorkflow.mutateAsync({
+        id: workflowId,
+        data: {
+          nodes: nextNodes,
+          edges: rewiredEdges,
+        },
+      });
+      queryClient.setQueryData(["workflow", workflowId], updatedWorkflow);
+
+      for (const id of selectedNodeIds) {
+        removeFromWorkspace(id);
+      }
+      addToWorkspace(mergedNodeId);
+      setCanvasEdges(
+        rewiredEdges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+        })),
+      );
+      positions[mergedNodeId] = mergedPosition;
+      for (const id of selectedNodeIds) {
+        delete positions[id];
+      }
+      try {
+        localStorage.setItem("agent-canvas-positions", JSON.stringify(positions));
+      } catch {
+        // Ignore localStorage write failures.
+      }
+      setSelectedNodeIds([]);
+      setSelected("agent", mergedNodeId);
+      setDetailMode("edit");
+      setRightOpen(layoutMode, true);
+      toast.success(`Merged ${selectedAgents.length} nodes into ${mergedName}`);
+    } catch (error) {
+      if (createdScopedAgent) {
+        try {
+          await fetch(
+            `/api/workflows/${workflowId}/agents/${encodeURIComponent(mergedName)}`,
+            { method: "DELETE" },
+          );
+        } catch {
+          // Ignore rollback failures.
+        }
+      }
+      const message =
+        error instanceof Error ? error.message : "Failed to merge selected nodes";
+      toast.error(message);
+    }
+  }, [
+    workflow,
+    selectedNodeIds,
+    workspaceAgentsList,
+    agents,
+    canvasEdges,
+    workflowId,
+    updateWorkflow,
+    queryClient,
+    removeFromWorkspace,
+    addToWorkspace,
+    setSelected,
+    setDetailMode,
+    layoutMode,
+    setRightOpen,
+  ]);
+
   const handleEdgesChange = useCallback((edges: Edge[]) => {
-    setCanvasEdges(edges);
+    const next = edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+    }));
+    setCanvasEdges((prev) => (areCanvasEdgesEquivalent(prev, next) ? prev : next));
   }, []);
 
   const handleSaveWorkflowOverrides = useCallback(
@@ -802,13 +1164,6 @@ export function WorkflowCanvasBuilder({
     () => workspaceAgentsList.filter((a) => a.enabled !== false).length,
     [workspaceAgentsList],
   );
-  const selectedCanvasAgent = useMemo(() => {
-    if (selection?.type !== "agent") return null;
-    return (
-      workspaceAgentsList.find((agent) => agent.instanceId === selection.id) ??
-      null
-    );
-  }, [selection, workspaceAgentsList]);
   const detailSelection = useMemo(
     () => selection ?? (workflow ? { type: "workflow", id: workflow.id } : null),
     [selection, workflow],
@@ -893,8 +1248,13 @@ export function WorkflowCanvasBuilder({
       onDeployWorkflow={(id) => setDeployWorkflowId(id)}
       onDeployWorkflowAsCommand={(id) => setCommandDeployId(id)}
       workspaceAgentNames={new Set(workspaceAgents.map(parseInstanceId))}
-      onRemoveFromWorkspace={() => {
-        if (selection?.type === "agent") handleRemoveFromWorkspace(selection.id);
+      onRemoveFromWorkspace={(target) => {
+        const targetId = workspaceAgents.includes(target)
+          ? target
+          : selection?.type === "agent"
+            ? selection.id
+            : null;
+        if (targetId) handleRemoveFromWorkspace(targetId);
       }}
       onAddToWorkspace={(name) => addToWorkspace(generateInstanceId(name))}
       onRenameWorkflow={(id, name) =>
@@ -903,6 +1263,7 @@ export function WorkflowCanvasBuilder({
       width={detailWidth}
       onDragStart={handleDetailDragStart}
       onPromoteAgent={handlePromoteWorkflowAgent}
+      compactWorkflowAgentActions={false}
     />
   );
 
@@ -1201,6 +1562,8 @@ export function WorkflowCanvasBuilder({
               onDropAgent={handleDropAgent}
               onAttachSkill={handleAttachSkill}
               onEdgesChange={handleEdgesChange}
+              onEditAgent={handleEditWorkspaceAgentFromCanvas}
+              onDuplicateAgent={handleDuplicateWorkspaceAgentFromCanvas}
               onRemoveFromWorkspace={handleRemoveFromWorkspace}
               onDeleteAgent={handleDeleteScopedAgent}
               canDeleteAgent={(agent) => agent?.scope === "workflow"}
@@ -1316,62 +1679,6 @@ export function WorkflowCanvasBuilder({
               onSaveWorkflow={() => setSaveDialogOpen(true)}
               showSaveWorkflow={false}
               showDeploy={false}
-              actionSlot={
-                selectedCanvasAgent ? (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() =>
-                        handleRemoveFromWorkspace(selectedCanvasAgent.instanceId)
-                      }
-                    >
-                      <PanelLeftClose size={10} />
-                      Remove
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() => {
-                        setDetailMode("edit");
-                        setRightOpen(layoutMode, true);
-                      }}
-                    >
-                      <Pencil size={10} />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() =>
-                        handleDuplicateWorkspaceAgent(
-                          selectedCanvasAgent,
-                          selectedCanvasAgent.instanceId,
-                        )
-                      }
-                    >
-                      <Copy size={10} />
-                      Duplicate
-                    </Button>
-                    {selectedCanvasAgent.scope === "workflow" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs gap-1"
-                        onClick={() =>
-                          void handlePromoteWorkflowAgent(selectedCanvasAgent.name)
-                        }
-                      >
-                        <ArrowUpFromLine size={10} />
-                        Promote to Global
-                      </Button>
-                    )}
-                  </>
-                ) : undefined
-              }
             />
 
             {/* Bulk action bar */}
@@ -1381,6 +1688,15 @@ export function WorkflowCanvasBuilder({
                   {selectedNodeIds.length} selected
                 </span>
                 <div className="w-px h-4 bg-border" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5"
+                  onClick={() => void handleMergeSelected()}
+                >
+                  <Merge size={12} />
+                  Merge Nodes
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"

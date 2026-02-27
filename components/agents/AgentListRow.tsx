@@ -23,6 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { Agent } from "@/types/agent";
 import {
   getAgentModelDisplay,
@@ -42,6 +43,7 @@ export function AgentListRow({
   onDelete,
   onDuplicate,
 }: AgentListRowProps) {
+  const router = useRouter();
   const modelInfo = getAgentModelDisplay(agent.model, agent.provider);
   const launchParams = new URLSearchParams({
     agent: agent.name,
@@ -179,15 +181,14 @@ export function AgentListRow({
       {/* Actions (visible on hover) */}
       { }
       <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={(e) => e.stopPropagation()}>
-        <Link href={launchHref}>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0 text-success"
-          >
-            <Play size={11} />
-          </Button>
-        </Link>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 text-success"
+          onClick={() => router.push(launchHref)}
+        >
+          <Play size={11} />
+        </Button>
         {onDuplicate && (
           <Button
             variant="ghost"

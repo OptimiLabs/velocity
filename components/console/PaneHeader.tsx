@@ -4,15 +4,15 @@ import { useState, useCallback, type DragEvent } from "react";
 import {
   Terminal,
   Settings,
-  BookOpen,
   SplitSquareHorizontal,
   SplitSquareVertical,
   X,
   GripVertical,
 } from "lucide-react";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
+import { resolveConsoleCwd } from "@/lib/console/cwd";
 import { toast } from "sonner";
-import type { PaneNode, PaneContent } from "@/types/console";
+import type { PaneNode, PaneContent, TerminalMeta } from "@/types/console";
 
 function shortenPath(p: string): string {
   if (!p) return "";
@@ -27,12 +27,12 @@ interface PaneHeaderProps {
   onClose: () => void;
   isOnly?: boolean;
   /** Group-specific terminal metadata — avoids reading wrong group from store */
-  terminals?: Record<string, { label?: string; cwd?: string; sessionId?: string }>;
+  terminals?: Record<string, TerminalMeta>;
 }
 
 function labelFor(
   content: PaneContent,
-  terminals?: Record<string, { label?: string; cwd?: string; sessionId?: string }>,
+  terminals?: Record<string, TerminalMeta>,
 ): {
   icon: typeof Terminal;
   label: string;
@@ -52,7 +52,7 @@ function labelFor(
     case "settings":
       return { icon: Settings, label: "Settings" };
     case "context":
-      return { icon: BookOpen, label: "Context" };
+      return { icon: Settings, label: "Settings" };
     case "empty":
       return { icon: Terminal, label: "New Terminal" };
     default: {
@@ -78,17 +78,41 @@ export function PaneHeader({
   const [isDragging, setIsDragging] = useState(false);
   const { icon: Icon, label, cwd } = labelFor(node.content, terminals);
   const setIsDraggingPane = useConsoleLayoutStore((s) => s.setIsDraggingPane);
+  const updateTerminalMeta = useConsoleLayoutStore((s) => s.updateTerminalMeta);
+  const storeTerminals = useConsoleLayoutStore((s) => s.terminals);
+
+  const terminalId =
+    node.content.type === "terminal" ? node.content.terminalId : null;
+  const terminalMeta = terminalId
+    ? terminals?.[terminalId] ?? storeTerminals[terminalId]
+    : undefined;
+  const sidePanel = terminalMeta?.sidePanel;
+
+  const getSplitSource = () => {
+    const store = useConsoleLayoutStore.getState();
+    const sourceMeta =
+      node.content.type === "terminal"
+        ? terminals?.[node.content.terminalId] ??
+          store.terminals[node.content.terminalId]
+        : undefined;
+    const sessionId = sourceMeta?.sessionId ?? store.activeSessionId;
+    return {
+      sessionId,
+      cwd: resolveConsoleCwd(sourceMeta?.cwd),
+    };
+  };
 
   const handleSplitH = () => {
     const store = useConsoleLayoutStore.getState();
-    if (!store.activeSessionId) {
+    const source = getSplitSource();
+    if (!source.sessionId) {
       toast.error("Select or create a session first.");
       return;
     }
     store.addTerminal(
       {
-        cwd: "~",
-        sessionId: store.activeSessionId,
+        cwd: source.cwd,
+        sessionId: source.sessionId,
       },
       "h",
     );
@@ -96,14 +120,15 @@ export function PaneHeader({
 
   const handleSplitV = () => {
     const store = useConsoleLayoutStore.getState();
-    if (!store.activeSessionId) {
+    const source = getSplitSource();
+    if (!source.sessionId) {
       toast.error("Select or create a session first.");
       return;
     }
     store.addTerminal(
       {
-        cwd: "~",
-        sessionId: store.activeSessionId,
+        cwd: source.cwd,
+        sessionId: source.sessionId,
       },
       "v",
     );
@@ -126,6 +151,13 @@ export function PaneHeader({
     setIsDraggingPane(false);
   }, [setIsDraggingPane]);
 
+  const toggleSettingsPanel = () => {
+    if (!terminalId) return;
+    updateTerminalMeta(terminalId, {
+      sidePanel: sidePanel === "settings" ? undefined : "settings",
+    });
+  };
+
   return (
     <div
       className={`flex items-center h-6 px-1.5 bg-card/70 border-b border-border/50 shrink-0 gap-0.5 ${
@@ -137,7 +169,11 @@ export function PaneHeader({
     >
       <GripVertical className="w-3 h-3 text-text-quaternary cursor-grab active:cursor-grabbing shrink-0" />
       <Icon className="w-3 h-3 text-muted-foreground" />
-      <span className="text-meta font-medium text-muted-foreground truncate ml-0.5">
+      <span
+        className={`text-meta text-muted-foreground truncate ml-0.5 ${
+          label === "Settings" ? "font-semibold" : "font-medium"
+        }`}
+      >
         {label}
       </span>
       {cwd && (
@@ -148,6 +184,21 @@ export function PaneHeader({
 
       <div className="flex-1" />
 
+      {terminalId && (
+        <>
+          <button
+            onClick={toggleSettingsPanel}
+            className={`p-0.5 rounded transition-colors ${
+              sidePanel === "settings"
+                ? "bg-primary/20 text-primary"
+                : "text-muted-foreground hover:text-primary hover:bg-primary/20"
+            }`}
+            title="Toggle settings panel"
+          >
+            <Settings className="w-3 h-3" />
+          </button>
+        </>
+      )}
       <button
         onClick={handleSplitH}
         className="p-0.5 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb, ensureIndexed } from "@/lib/db";
 import { buildAnalyticsFilters } from "@/lib/api/analytics-filters";
+import { parseConfigProvider } from "@/lib/providers/mcp-settings";
 
 function shortenPath(filePath: string): string {
   return filePath
@@ -21,9 +22,13 @@ export async function GET(request: Request) {
   const rawTo = searchParams.get("to") || new Date().toISOString().split("T")[0];
   const from = rawFrom.split("T")[0];
   const to = rawTo.split("T")[0];
+  const provider =
+    parseConfigProvider(searchParams.get("provider") ?? null) ?? null;
 
   const { sql: filterSql, params: filterParams } =
     buildAnalyticsFilters(searchParams, "s");
+  const instructionProviderFilterSql = provider ? " AND inf.provider = ?" : "";
+  const instructionProviderFilterParams = provider ? [provider] : [];
 
   const db = getDb();
 
@@ -42,10 +47,11 @@ export async function GET(request: Request) {
         AND DATE(s.created_at) >= ? AND DATE(s.created_at) <= ?
         ${filterSql}
       WHERE inf.is_active = 1
+        ${instructionProviderFilterSql}
       GROUP BY inf.id
     `,
     )
-    .all(from, to, ...filterParams) as {
+    .all(from, to, ...filterParams, ...instructionProviderFilterParams) as {
     id: string;
     file_path: string;
     file_type: string;
@@ -144,10 +150,17 @@ export async function GET(request: Request) {
         WHERE s.project_path IN (${placeholders})
           AND DATE(s.created_at) >= ? AND DATE(s.created_at) <= ?
           ${filterSql}
+          ${instructionProviderFilterSql}
         GROUP BY s.project_path, inf.id
       `,
       )
-      .all(...allProjectPaths, from, to, ...filterParams) as {
+      .all(
+        ...allProjectPaths,
+        from,
+        to,
+        ...filterParams,
+        ...instructionProviderFilterParams,
+      ) as {
       session_project_path: string;
       file_path: string;
       file_type: string;
@@ -230,20 +243,36 @@ export async function GET(request: Request) {
       JOIN instruction_files inf ON sif.instruction_id = inf.id
       WHERE DATE(s.created_at) >= ? AND DATE(s.created_at) <= ?
         ${filterSql}
+        ${instructionProviderFilterSql}
     `,
     )
-    .get(from, to, ...filterParams) as { weighted_sum: number };
+    .get(
+      from,
+      to,
+      ...filterParams,
+      ...instructionProviderFilterParams,
+    ) as { weighted_sum: number };
 
   const avgTokensPerSession =
     totalSessions > 0
       ? Math.round(weightedRow.weighted_sum / totalSessions)
       : 0;
+  const usedInstructionFiles = instructionFiles.filter(
+    (file) => file.sessionCount > 0,
+  );
+  const usedInstructionTokens = usedInstructionFiles.reduce(
+    (sum, file) => sum + file.tokenCount,
+    0,
+  );
 
   return NextResponse.json({
+    provider: provider ?? "all",
     instructionFiles,
     projectBreakdown,
     totals: {
       totalInstructionFiles: instructionFiles.length,
+      usedInstructionFiles: usedInstructionFiles.length,
+      usedInstructionTokens,
       avgTokensPerSession,
       totalSessions,
     },

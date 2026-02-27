@@ -8,6 +8,7 @@ export interface GeminiSessionEntry {
   filePath: string;
   createdAt: string;
   modifiedAt: string;
+  projectPath: string | null;
 }
 
 export function getGeminiSessionsBaseDir(): string {
@@ -35,6 +36,7 @@ export function discoverGeminiSessionsFrom(
   for (const hashDir of safeReadDir(baseDir)) {
     const hashPath = path.join(baseDir, hashDir);
     if (!isDir(hashPath)) continue;
+    const projectPath = readProjectPath(hashPath);
 
     const chatsDir = path.join(hashPath, "chats");
     if (!isDir(chatsDir)) continue;
@@ -52,6 +54,7 @@ export function discoverGeminiSessionsFrom(
           filePath,
           createdAt: stat.birthtime.toISOString(),
           modifiedAt: stat.mtime.toISOString(),
+          projectPath,
         });
       } catch {
         /* skip unreadable */
@@ -60,6 +63,16 @@ export function discoverGeminiSessionsFrom(
   }
 
   return entries;
+}
+
+function readProjectPath(hashDir: string): string | null {
+  const markerPath = path.join(hashDir, ".project_root");
+  try {
+    const value = fs.readFileSync(markerPath, "utf-8").trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function safeReadDir(dir: string): string[] {

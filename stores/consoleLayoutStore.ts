@@ -22,6 +22,7 @@ import {
   addSavedPreset,
   removeSavedPreset,
 } from "@/lib/console/layout-presets";
+import { DEFAULT_CONSOLE_CWD } from "@/lib/console/cwd";
 
 // --- Extracted modules ---
 import { migrateState } from "./consoleLayout/migrations";
@@ -58,9 +59,13 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
       groupOrder: [],
       pinnedSessionIds: [],
       activeSessionId: null,
+      tabbedSidePanel: undefined,
       contextPanelOpen: false,
       pasteHistoryOpen: false,
       setPasteHistoryOpen: (open) => set({ pasteHistoryOpen: open }),
+      focusRequestSeq: 0,
+      requestActiveTerminalFocus: () =>
+        set((state) => ({ focusRequestSeq: state.focusRequestSeq + 1 })),
       savedPresets: [],
       savePreset: (name) =>
         set((state) => {
@@ -166,12 +171,14 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
                     terminals: { ...group.terminals, [terminalId]: finalMeta },
                     paneTree: newTree,
                     activePaneId: emptyLeaf.id,
+                    focusedPaneId: emptyLeaf.id,
                     tabOrder: [terminalId],
                   }))
                 : updateActiveGroup(effectiveState, () => ({
                     terminals: { ...group.terminals, [terminalId]: finalMeta },
                     paneTree: newTree,
                     activePaneId: emptyLeaf.id,
+                    focusedPaneId: emptyLeaf.id,
                     tabOrder: [terminalId],
                   }))),
               activeSessionId: meta.sessionId ?? get().activeSessionId,
@@ -181,6 +188,54 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
         }
 
         const newContent: PaneContent = { type: "terminal", terminalId };
+        const leafForPaneId = (paneId: string | null | undefined) => {
+          if (!paneId) return null;
+          const node = findNode(group.paneTree, paneId);
+          return node && node.kind === "leaf" ? node : null;
+        };
+        const isTerminalForSession = (leafId: string, sessionId?: string) => {
+          if (!sessionId) return true;
+          const leaf = findNode(group.paneTree, leafId);
+          if (!leaf || leaf.kind !== "leaf" || leaf.content.type !== "terminal") {
+            return false;
+          }
+          return group.terminals[leaf.content.terminalId]?.sessionId === sessionId;
+        };
+        const resolveTargetLeafId = (requireSameSessionTerminal: boolean) => {
+          const focusedLeaf = leafForPaneId(group.focusedPaneId);
+          if (
+            focusedLeaf &&
+            (focusedLeaf.content.type === "empty" ||
+              (focusedLeaf.content.type === "terminal" &&
+                (!requireSameSessionTerminal ||
+                  isTerminalForSession(focusedLeaf.id, meta.sessionId))))
+          ) {
+            return focusedLeaf.id;
+          }
+
+          const activeLeaf = leafForPaneId(group.activePaneId);
+          if (
+            activeLeaf &&
+            (activeLeaf.content.type === "empty" ||
+              (activeLeaf.content.type === "terminal" &&
+                (!requireSameSessionTerminal ||
+                  isTerminalForSession(activeLeaf.id, meta.sessionId))))
+          ) {
+            return activeLeaf.id;
+          }
+
+          if (requireSameSessionTerminal && existingTermLeaves.length > 0) {
+            return existingTermLeaves[existingTermLeaves.length - 1]?.id ?? null;
+          }
+
+          const emptyLeaf = findLeafByContent(group.paneTree, (c) => c.type === "empty");
+          if (emptyLeaf) return emptyLeaf.id;
+
+          const anyTerminal = findLeafByContent(group.paneTree, (c) => c.type === "terminal");
+          if (anyTerminal) return anyTerminal.id;
+
+          return group.paneTree.id;
+        };
 
         // When orientation IS specified (⌘D split), split the focused pane
         // When orientation is NOT specified ("+"/⌘T), rebuild as balanced grid
@@ -189,11 +244,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
             orientation === "v"
               ? ("vertical" as const)
               : ("horizontal" as const);
-          const targetId =
-            group.focusedPaneId ||
-            group.activePaneId ||
-            findLeafByContent(group.paneTree, (c) => c.type === "empty")?.id ||
-            group.paneTree.id;
+          const targetId = resolveTargetLeafId(existingTermLeaves.length > 0);
 
           const newTree = splitPane(
             group.paneTree,
@@ -210,6 +261,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
             terminals: { ...group.terminals, [terminalId]: finalMeta },
             paneTree: newTree,
             activePaneId: newLeaf?.id ?? group.activePaneId,
+            focusedPaneId: newLeaf?.id ?? group.focusedPaneId,
             tabOrder: [...(group.tabOrder ?? []), terminalId],
           });
 
@@ -223,17 +275,8 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
           // First terminal for a new session (no empty leaf to replace).
           // Co-locate with an existing terminal leaf so the visibility system
           // can toggle between sessions at the same tree position.
-          // Prefer a terminal from the same session for affinity; fall back to any terminal.
-          const allLeaves = collectLeaves(group.paneTree);
-          const sameSessionTerminal = allLeaves.find(
-            (l) =>
-              l.content.type === "terminal" &&
-              group.terminals[l.content.terminalId]?.sessionId === meta.sessionId,
-          );
-          const anyTerminal = allLeaves.find(
-            (l) => l.content.type === "terminal",
-          );
-          const colocateTarget = sameSessionTerminal?.id ?? anyTerminal?.id ?? group.paneTree.id;
+          // Prefer focused/active leaf so new sessions open where the user is working.
+          const colocateTarget = resolveTargetLeafId(false);
 
           const newTree = splitPane(
             group.paneTree,
@@ -250,6 +293,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
             terminals: { ...group.terminals, [terminalId]: finalMeta },
             paneTree: newTree,
             activePaneId: newLeaf?.id ?? group.activePaneId,
+            focusedPaneId: newLeaf?.id ?? group.focusedPaneId,
             tabOrder: [...(group.tabOrder ?? []), terminalId],
           });
 
@@ -261,15 +305,8 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
           });
         } else {
           // Append mode (⌘T): split the focused/active pane, preserving layout
-          // Validate focusedPaneId exists in the tree before using it as split target
-          const validFocused = group.focusedPaneId && findNode(group.paneTree, group.focusedPaneId)
-            ? group.focusedPaneId
-            : null;
-          const targetId =
-            validFocused ||
-            group.activePaneId ||
-            findLeafByContent(group.paneTree, (c) => c.type === "empty")?.id ||
-            group.paneTree.id;
+          // Keep splits scoped to the active session to avoid stale pane targets.
+          const targetId = resolveTargetLeafId(true);
 
           let newTree = splitPane(
             group.paneTree,
@@ -300,6 +337,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
             terminals: { ...group.terminals, [terminalId]: finalMeta },
             paneTree: newTree,
             activePaneId: newLeaf?.id ?? group.activePaneId,
+            focusedPaneId: newLeaf?.id ?? group.focusedPaneId,
             tabOrder: [...(group.tabOrder ?? []), terminalId],
           });
 
@@ -426,7 +464,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
 
           const fallbackMeta = existing
             ? { ...existing, ...updates }
-            : { label: "Terminal", cwd: "~", ...updates };
+            : { label: "Terminal", cwd: DEFAULT_CONSOLE_CWD, ...updates };
 
           // Fallback: update in focused group
           return updateActiveGroup(state, (group) => ({
@@ -475,6 +513,8 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
             return { activePaneId: paneId };
           }),
         ),
+      setTabbedSidePanel: (panel) =>
+        set({ tabbedSidePanel: panel === "settings" ? "settings" : undefined }),
 
       setLayoutMode: (mode) => set({ layoutMode: mode }),
 
@@ -488,24 +528,15 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
         ),
 
       closePaneAction: (paneId) =>
-        set((state) => {
-          const group = getActiveGroup(state);
-          // Check if the pane being closed is a context pane (before it's removed)
-          const node = findNode(group.paneTree, paneId);
-          const isContextPane =
-            node?.kind === "leaf" && node.content.type === "context";
-
-          return {
-            ...(isContextPane ? { contextPanelOpen: false } : {}),
-            ...updateActiveGroup(state, (g) => {
-              const result = closePane(g.paneTree, paneId);
-              return {
-                paneTree: result ?? defaultLayout(),
-                focusedPaneId: result ? g.focusedPaneId : null,
-              };
-            }),
-          };
-        }),
+        set((state) =>
+          updateActiveGroup(state, (g) => {
+            const result = closePane(g.paneTree, paneId);
+            return {
+              paneTree: result ?? defaultLayout(),
+              focusedPaneId: result ? g.focusedPaneId : null,
+            };
+          }),
+        ),
 
       setFocusedPane: (paneId) =>
         set((state) => {
@@ -662,32 +693,6 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
           if (!state.groups[groupId]) return {};
           let group = { ...state.groups[groupId] };
 
-          // Scan for context leaf
-          const leaves = collectLeaves(group.paneTree);
-          let contextLeaf: (PaneNode & { kind: "leaf" }) | null = null;
-          for (const leaf of leaves) {
-            if (leaf.content.type === "context") contextLeaf = leaf;
-          }
-
-          if (state.contextPanelOpen && !contextLeaf) {
-            // Inject context pane into target group
-            const claudeId = group.paneTree.id;
-            group = {
-              ...group,
-              paneTree: splitPane(group.paneTree, claudeId, "horizontal", {
-                type: "context",
-              }),
-            };
-          } else if (!state.contextPanelOpen && contextLeaf) {
-            // Remove stale context pane from target group
-            const result = closePane(group.paneTree, contextLeaf.id);
-            group = {
-              ...group,
-              paneTree: result ?? defaultLayout(),
-              focusedPaneId: result ? group.focusedPaneId : null,
-            };
-          }
-
           // Validate activePaneId and focusedPaneId after tree mutation (inject/remove changes IDs)
           if (!paneExists(group.paneTree, group.activePaneId)) {
             // Fall back to first terminal leaf, then empty leaf, then root
@@ -798,78 +803,73 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
         const state = get();
         const group = getActiveGroup(state);
         const leaves = collectLeaves(group.paneTree);
+        const activeLeaf =
+          group.activePaneId != null
+            ? findNode(group.paneTree, group.activePaneId)
+            : null;
+        type TerminalLeaf = PaneNode & {
+          kind: "leaf";
+          content: { type: "terminal"; terminalId: string };
+        };
+        const pickActiveTerminal = (): TerminalLeaf | null => {
+          if (
+            activeLeaf?.kind === "leaf" &&
+            activeLeaf.content.type === "terminal"
+          ) {
+            return activeLeaf as TerminalLeaf;
+          }
+          const firstTerminal = leaves.find(
+            (l): l is TerminalLeaf => l.content.type === "terminal",
+          );
+          return firstTerminal ?? null;
+        };
+
+          const setTerminalSidePanel = (panel: "context" | "settings") => {
+            const terminalLeaf = pickActiveTerminal();
+            if (!terminalLeaf) return;
+            const terminalId = terminalLeaf.content.terminalId;
+            const current = group.terminals[terminalId];
+            if (!current) return;
+            const nextPanel =
+              panel === "settings" && current.sidePanel !== "settings"
+                ? "settings"
+                : undefined;
+            set(
+              updateActiveGroup(state, () => ({
+                activePaneId: terminalLeaf.id,
+              terminals: {
+                ...group.terminals,
+                [terminalId]: {
+                  ...current,
+                  sidePanel: nextPanel,
+                },
+              },
+            })),
+          );
+        };
         let target: PaneNode | undefined;
         switch (tab) {
           case "terminal": {
             // Find the currently active terminal, or first terminal
-            const activeLeaf = group.activePaneId
-              ? findNode(group.paneTree, group.activePaneId)
-              : null;
-            if (
-              activeLeaf?.kind === "leaf" &&
-              activeLeaf.content.type === "terminal"
-            ) {
-              target = activeLeaf;
-            } else {
-              target = leaves.find((l) => l.content.type === "terminal");
-            }
+            target = pickActiveTerminal() ?? undefined;
             break;
           }
           case "env":
           case "settings":
-            target = leaves.find((l) => l.content.type === "settings");
-            if (!target) {
-              // Create settings pane if it doesn't exist
-              const claudeId =
-                findLeafByContent(group.paneTree, (c) => c.type === "empty")
-                  ?.id || group.paneTree.id;
-              const newTree = splitPane(
-                group.paneTree,
-                claudeId,
-                "horizontal",
-                { type: "settings" },
-              );
-              const settingsLeaf = findLeafByContent(
-                newTree,
-                (c) => c.type === "settings",
-              );
-              set(
-                updateActiveGroup(state, () => ({
-                  paneTree: newTree,
-                  activePaneId: settingsLeaf?.id ?? null,
-                })),
-              );
-              return;
-            }
-            break;
-          case "context":
-            target = leaves.find((l) => l.content.type === "context");
-            if (!target) {
-              const claudeId =
-                findLeafByContent(group.paneTree, (c) => c.type === "empty")
-                  ?.id || group.paneTree.id;
-              const newTree = splitPane(
-                group.paneTree,
-                claudeId,
-                "horizontal",
-                { type: "context" },
-              );
-              const contextLeaf = findLeafByContent(
-                newTree,
-                (c) => c.type === "context",
-              );
+            if (state.layoutMode !== "tiling") {
               set({
-                contextPanelOpen: true,
-                ...updateActiveGroup(state, () => ({
-                  paneTree: newTree,
-                  activePaneId: contextLeaf?.id ?? null,
-                })),
+                tabbedSidePanel:
+                  state.tabbedSidePanel === "settings"
+                    ? undefined
+                    : "settings",
               });
               return;
             }
-            // Context leaf already exists — still mark panel as open
-            set({ contextPanelOpen: true });
-            break;
+            setTerminalSidePanel("settings");
+            return;
+          case "context":
+            // Context panel was removed from console UX.
+            return;
         }
         if (target) {
           set(updateActiveGroup(state, () => ({ activePaneId: target!.id })));
@@ -958,6 +958,7 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
         collapsedGroupIds: state.collapsedGroupIds,
         groupOrder: state.groupOrder,
         pinnedSessionIds: state.pinnedSessionIds,
+        tabbedSidePanel: state.tabbedSidePanel,
         contextPanelOpen: state.contextPanelOpen,
         maximizedPaneId: state.maximizedPaneId,
         savedPresets: state.savedPresets,
@@ -1029,6 +1030,20 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
               groupsDirty = true;
             }
 
+            // Remove legacy context leaves from persisted layouts.
+            const contextLeaves = collectLeaves(cleanGroups[gid].paneTree).filter(
+              (l) => l.content.type === "context",
+            );
+            if (contextLeaves.length > 0) {
+              let tree = cleanGroups[gid].paneTree;
+              for (const leaf of contextLeaves) {
+                const result = closePane(tree, leaf.id);
+                tree = result ?? defaultLayout();
+              }
+              cleanGroups[gid] = { ...cleanGroups[gid], paneTree: tree };
+              groupsDirty = true;
+            }
+
             // Reverse cleanup: prune orphaned Claude terminal records (in record but not in tree)
             const treeTermIds = new Set(
               leaves
@@ -1042,7 +1057,11 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
               ...(cleanGroups[gid]?.terminals ?? group.terminals),
             };
             let terminalsDirty = false;
-            for (const [tid] of Object.entries(cleanTerminals)) {
+            for (const [tid, meta] of Object.entries(cleanTerminals)) {
+              if (meta.sidePanel === "context") {
+                cleanTerminals[tid] = { ...meta, sidePanel: undefined };
+                terminalsDirty = true;
+              }
               if (treeTermIds.has(tid)) continue; // has a terminal leaf — keep
               delete cleanTerminals[tid];
               terminalsDirty = true;
@@ -1076,13 +1095,22 @@ export const useConsoleLayoutStore = create<ConsoleLayoutState>()(
               groupsDirty = true;
             }
           }
+          if (state.tabbedSidePanel === "context") {
+            patchCleanup.tabbedSidePanel = undefined;
+          }
+          if (state.contextPanelOpen) {
+            patchCleanup.contextPanelOpen = false;
+          }
           if (groupsDirty) {
             patchCleanup.groups = cleanGroups;
           }
 
-          const gid = state.activeGroupId || Object.keys(state.groups)[0];
-          if (gid && state.groups[gid]) {
-            const g = state.groups[gid];
+          const sourceGroups =
+            (patchCleanup.groups as typeof state.groups | undefined) ??
+            state.groups;
+          const gid = state.activeGroupId || Object.keys(sourceGroups)[0];
+          if (gid && sourceGroups[gid]) {
+            const g = sourceGroups[gid];
             apply({ _hydrated: true, ...derivedFromGroup(g), ...patchCleanup });
           } else {
             apply({ _hydrated: true, ...patchCleanup });

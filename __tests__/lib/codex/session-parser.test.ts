@@ -469,4 +469,81 @@ describe("parseCodexSession", () => {
     expect(stats.modelUsage["gpt-5.3-codex"].reasoningTokens).toBe(10);
     expect(stats.totalCost).toBeCloseTo(expected.cost, 12);
   });
+
+  it("captures project/git metadata and spawn_agent/path aliases", async () => {
+    const t0 = new Date("2026-02-24T17:00:00.000Z");
+    const filePath = writeFixture([
+      {
+        timestamp: iso(t0, 0),
+        type: "session_meta",
+        payload: {
+          cwd: "/Users/test/workspace/app",
+          git: { branch: "feature/codex-parser" },
+        },
+      },
+      {
+        timestamp: iso(t0, 50),
+        type: "turn_context",
+        payload: {
+          git: { branch: "feature/codex-parser-updated" },
+          cwd: "/Users/test/workspace/app-updated",
+          approval_policy: "on-request",
+          sandbox_policy: { type: "workspace-write" },
+          collaboration_mode: { mode: "default" },
+        },
+      },
+      {
+        timestamp: iso(t0, 80),
+        type: "event_msg",
+        payload: { type: "user_message", message: "run tools" },
+      },
+      {
+        timestamp: iso(t0, 120),
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "spawn_agent",
+          arguments: JSON.stringify({ agent_type: "reviewer" }),
+        },
+      },
+      {
+        timestamp: iso(t0, 140),
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "read_file",
+          arguments: JSON.stringify({ filePath: "src/app.ts" }),
+        },
+      },
+      {
+        timestamp: iso(t0, 160),
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "search_files",
+          arguments: JSON.stringify({ dir_path: "src" }),
+        },
+      },
+      {
+        timestamp: iso(t0, 220),
+        type: "event_msg",
+        payload: { type: "agent_message", message: "done" },
+      },
+    ]);
+
+    const stats = await parseCodexSession(filePath);
+
+    expect(stats.projectPath).toBe("/Users/test/workspace/app-updated");
+    expect(stats.gitBranch).toBe("feature/codex-parser-updated");
+    expect(stats.enrichedTools.agents).toEqual([
+      { type: "reviewer", description: "" },
+    ]);
+    expect(stats.enrichedTools.filesRead.map((f) => f.path)).toContain(
+      "src/app.ts",
+    );
+    expect(stats.enrichedTools.searchedPaths).toContain("src");
+    expect(stats.tags).toContain("approval:on-request");
+    expect(stats.tags).toContain("sandbox:workspace-write");
+    expect(stats.tags).toContain("mode:default");
+  });
 });

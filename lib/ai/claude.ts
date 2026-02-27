@@ -1,5 +1,6 @@
 import * as pty from "node-pty";
 import { killProcess } from "@/lib/platform";
+import { spawnCliPty } from "@/lib/ai/pty-runtime";
 
 function normalizePtyOutput(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
@@ -11,7 +12,8 @@ function buildClaudeEnv(
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_")) continue;
+    // Strip nested-session markers only; preserve auth keys like CLAUDE_API_KEY.
+    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_")) continue;
     env[key] = value;
   }
   env.FORCE_COLOR = "0";
@@ -30,13 +32,14 @@ export async function claudeOneShot(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const args = [
-      "-p",
+      "--print",
       "--output-format",
       "text",
       "--no-session-persistence",
       "--setting-sources",
       "",
       "--strict-mcp-config",
+      prompt,
     ];
     if (model) {
       args.unshift("--model", model);
@@ -44,8 +47,7 @@ export async function claudeOneShot(
 
     let term: pty.IPty;
     try {
-      term = pty.spawn("claude", args, {
-        name: "xterm-256color",
+      term = spawnCliPty("claude", args, {
         cols: 120,
         rows: 40,
         cwd: cwd || process.cwd(),
@@ -104,13 +106,7 @@ export async function claudeOneShot(
       });
     });
 
-    try {
-      term.write(prompt);
-      term.write("\x04");
-    } catch (err) {
-      finish(() => {
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-    }
+    // Prompt is passed as a CLI arg (not stdin) to avoid intermittent
+    // "Input must be provided ... when using --print" failures.
   });
 }

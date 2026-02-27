@@ -20,9 +20,6 @@ import {
 import {
   Sparkles,
   Loader2,
-  Wrench,
-  Server,
-  Plug,
   ChevronRight,
   Info,
 } from "lucide-react";
@@ -53,6 +50,13 @@ import {
   GEMINI_MODEL_OPTIONS,
   OPENAI_API_MODEL_OPTIONS,
 } from "@/lib/models/provider-models";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
+import { ToolMultiSelect } from "@/components/agents/ToolMultiSelect";
 
 interface AgentBuilderProps {
   open: boolean;
@@ -395,15 +399,6 @@ export function AgentBuilder({
     };
   }, [open]);
 
-  const toggleTool = (toolName: string) => {
-    setSelectedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(toolName)) next.delete(toolName);
-      else next.add(toolName);
-      return next;
-    });
-  };
-
   const handleBuild = async () => {
     if (!description.trim()) return;
     if (generationProvider !== DEFAULT_ASSIST_PROVIDER && !activeAssistOption) {
@@ -449,6 +444,14 @@ export function AgentBuilder({
 
     setLoading(true);
     setError(null);
+    const selectedBlockedTools = [...selectedTools].filter((tool) =>
+      selectableToolNames.has(tool),
+    );
+    const jobId = startProcessingJob({
+      title: "Generate agent draft",
+      subtitle: summarizeForJob(description),
+      source: "agents",
+    });
     try {
       const res = await fetch("/api/agents/build", {
         method: "POST",
@@ -468,8 +471,8 @@ export function AgentBuilder({
             ? { thinkingBudget: thinkingBudgetValue }
             : {}),
           ...(maxTokensValue !== undefined ? { maxTokens: maxTokensValue } : {}),
-          ...(supportsClaudeTools && selectedTools.size > 0
-            ? { tools: [...selectedTools] }
+          ...(supportsClaudeTools && selectedBlockedTools.length > 0
+            ? { disallowedTools: selectedBlockedTools }
             : {}),
           ...(existingAgents?.length && { existingAgents }),
         }),
@@ -482,11 +485,21 @@ export function AgentBuilder({
         payload?.baseConfig && typeof payload.baseConfig === "object"
           ? (payload.baseConfig as Partial<Agent>)
           : (payload as Partial<Agent>);
+      completeProcessingJob(jobId, {
+        subtitle: summarizeForJob(
+          generated.name
+            ? `Generated ${generated.name}`
+            : "Generated agent config",
+        ),
+      });
       onGenerated(generated);
       setDescription("");
       setSelectedTools(new Set());
       onClose();
     } catch (e) {
+      failProcessingJob(jobId, e, {
+        subtitle: summarizeForJob(description),
+      });
       setError(e instanceof Error ? e.message : "Failed to generate agent");
     } finally {
       setLoading(false);
@@ -495,48 +508,12 @@ export function AgentBuilder({
 
   const builtinTools = availableTools.filter((t) => t.type === "builtin");
   const mcpTools = availableTools.filter((t) => t.type === "mcp");
-  const pluginTools = availableTools.filter((t) => t.type === "plugin");
-
-  const ToolIcon = ({ type }: { type: string }) => {
-    if (type === "mcp") return <Server size={9} className="text-chart-1" />;
-    if (type === "plugin") return <Plug size={9} className="text-chart-4" />;
-    return <Wrench size={9} className="text-muted-foreground" />;
-  };
-
-  const ToolSection = ({
-    label,
-    tools,
-    activeColor,
-  }: {
-    label: string;
-    tools: ToolInfo[];
-    activeColor: string;
-  }) => {
-    if (tools.length === 0) return null;
-    return (
-      <div>
-        <div className="text-meta text-muted-foreground/60 mb-1">{label}</div>
-        <div className="flex flex-wrap gap-1">
-          {tools.map((tool) => (
-            <button
-              key={tool.name}
-              onClick={() => toggleTool(tool.name)}
-              title={tool.description}
-              className={cn(
-                "flex items-center gap-1 px-1.5 py-0.5 rounded text-meta font-mono border transition-colors",
-                selectedTools.has(tool.name)
-                  ? `${activeColor} text-primary`
-                  : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground",
-              )}
-            >
-              <ToolIcon type={tool.type} />
-              {tool.name}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  };
+  const skillTools = availableTools.filter((t) => t.type === "skill");
+  const selectableTools = [...builtinTools, ...mcpTools, ...skillTools];
+  const selectableToolNames = new Set(selectableTools.map((tool) => tool.name));
+  const selectedVisibleToolCount = [...selectedTools].filter((tool) =>
+    selectableToolNames.has(tool),
+  ).length;
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -835,55 +812,22 @@ export function AgentBuilder({
 
                 {supportsClaudeTools && (
                   <div className="rounded-md border border-border/50 bg-muted/20 px-2.5 py-2 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-meta text-muted-foreground">
-                        Tools{" "}
-                        {selectedTools.size > 0 &&
-                          `(${selectedTools.size} selected)`}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (selectedTools.size === availableTools.length) {
-                            setSelectedTools(new Set());
-                          } else {
-                            setSelectedTools(
-                              new Set(availableTools.map((t) => t.name)),
-                            );
-                          }
-                        }}
-                        className="text-meta text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        {selectedTools.size === availableTools.length &&
-                        availableTools.length > 0
-                          ? "Clear all"
-                          : "Select all"}
-                      </button>
-                    </div>
-                    <div className="space-y-2 max-h-[140px] overflow-y-auto">
-                      <ToolSection
-                        label="Builtin"
-                        tools={builtinTools}
-                        activeColor="border-primary/50 bg-primary/10"
-                      />
-                      <ToolSection
-                        label="MCP Servers"
-                        tools={mcpTools}
-                        activeColor="border-chart-1/50 bg-chart-1/10"
-                      />
-                      <ToolSection
-                        label="Plugins"
-                        tools={pluginTools}
-                        activeColor="border-chart-4/50 bg-chart-4/10"
-                      />
-                      {availableTools.length === 0 && (
-                        <span className="text-meta text-text-tertiary">
-                          Loading tools...
-                        </span>
+                    <span className="text-meta text-muted-foreground">
+                      Blocked Tools{" "}
+                      {selectedVisibleToolCount > 0 &&
+                        `(${selectedVisibleToolCount} selected)`}
+                    </span>
+                    <ToolMultiSelect
+                      tools={selectableTools}
+                      selected={[...selectedTools].filter((tool) =>
+                        selectableToolNames.has(tool),
                       )}
-                    </div>
+                      onChange={(next) => setSelectedTools(new Set(next))}
+                      emptyLabel="No blocked tools"
+                    />
                     <p className="text-meta text-muted-foreground/60">
-                      Leave empty to let AI pick appropriate tools
+                      Multi-select tools the generated agent should avoid.
+                      Leave empty to allow all tools.
                     </p>
                   </div>
                 )}

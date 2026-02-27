@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAgents } from "@/hooks/useAgents";
-import { useCreateWorkflow } from "@/hooks/useWorkflows";
-import { useWorkflowCreationStore } from "@/stores/workflowCreationStore";
+import { useCreateWorkflow, useGenerateWorkflow } from "@/hooks/useWorkflows";
 import type { WorkflowComplexity } from "@/stores/workflowCreationStore";
 import { useProviderScopeStore } from "@/stores/providerScopeStore";
 import {
@@ -18,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, Bot, Check, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { generateInstanceId } from "@/lib/workflow/instance";
 import { toast } from "sonner";
 
 interface CreateWorkflowModalProps {
@@ -35,9 +35,7 @@ export function CreateWorkflowModal({
   const providerScope = useProviderScopeStore((s) => s.providerScope);
   const { data: agents = [] } = useAgents(providerScope);
   const createWorkflow = useCreateWorkflow();
-  const setPendingAIIntent = useWorkflowCreationStore(
-    (s) => s.setPendingAIIntent,
-  );
+  const generateWorkflow = useGenerateWorkflow();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -66,7 +64,20 @@ export function CreateWorkflowModal({
     });
   };
 
-  const handleCreate = () => {
+  const buildScopedAgentPrompt = (roleLabel: string, taskDescription: string) =>
+    [
+      `# Role: ${roleLabel}`,
+      "",
+      "## Task",
+      taskDescription,
+      "",
+      "## Guidelines",
+      "- Focus only on the scope described above",
+      "- Follow existing project conventions and patterns",
+      "- Report completion status when done",
+    ].join("\n");
+
+  const handleCreate = async () => {
     if (activeMode === "manual") {
       if (!name.trim()) return;
 
@@ -94,58 +105,163 @@ export function CreateWorkflowModal({
           },
         },
       );
-    } else {
-      // AI mode
-      if (!prompt.trim()) return;
+      return;
+    }
 
-      const workflowName = name.trim() || "Untitled Workflow";
+    if (!prompt.trim()) return;
 
-      setPendingAIIntent({
-        prompt: prompt.trim(),
-        agentMode,
-        selectedAgents:
-          agentMode === "existing" ? Array.from(selectedAgents) : undefined,
-        complexity,
+    const promptText = prompt.trim();
+    const requestedName = name.trim();
+    const requestedComplexity = complexity;
+    const selectedAgentNames =
+      agentMode === "existing" ? Array.from(selectedAgents) : [];
+    const selectedAgentDetails =
+      agentMode === "existing"
+        ? selectedAgentNames.map((agentName) => {
+            const agent = agents.find((a) => a.name === agentName);
+            return {
+              name: agentName,
+              description: agent?.description ?? "",
+            };
+          })
+        : undefined;
+
+    onOpenChange(false);
+    resetForm();
+
+    toast.loading("Generating workflow in background…", {
+      description: "You can keep using the app. We will notify you when it is ready.",
+      duration: 2600,
+    });
+
+    try {
+      const result = await generateWorkflow.mutateAsync({
+        prompt: promptText,
+        existingAgents: selectedAgentDetails,
+        complexity: requestedComplexity,
       });
 
-      createWorkflow.mutate(
-        {
-          provider: providerScope,
-          name: workflowName,
-          description: prompt.trim(),
-          nodes: [],
-          edges: [],
-        },
-        {
-          onSuccess: (wf) => {
-            if (!wf?.id) {
-              console.error("Workflow creation returned no ID");
-              return;
+      const instanceIdMap = new Map<string, string>();
+      for (const node of result.nodes) {
+        if (!node.agentName || instanceIdMap.has(node.agentName)) continue;
+        instanceIdMap.set(node.agentName, generateInstanceId(node.agentName));
+      }
+
+      const remappedNodes = result.nodes.map((node) => {
+        if (!node.agentName) return node;
+        const instanceId = instanceIdMap.get(node.agentName);
+        if (!instanceId) return node;
+        return {
+          ...node,
+          id: instanceId,
+          dependsOn: node.dependsOn.map((depId) => {
+            const depNode = result.nodes.find((candidate) => candidate.id === depId);
+            if (!depNode?.agentName) return depId;
+            return instanceIdMap.get(depNode.agentName) ?? depId;
+          }),
+        };
+      });
+
+      const remappedEdges = result.edges.map((edge) => {
+        const sourceNode = result.nodes.find((node) => node.id === edge.source);
+        const targetNode = result.nodes.find((node) => node.id === edge.target);
+        const sourceId = sourceNode?.agentName
+          ? instanceIdMap.get(sourceNode.agentName) ?? edge.source
+          : edge.source;
+        const targetId = targetNode?.agentName
+          ? instanceIdMap.get(targetNode.agentName) ?? edge.target
+          : edge.target;
+        return { ...edge, source: sourceId, target: targetId };
+      });
+
+      const workflow = await createWorkflow.mutateAsync({
+        provider: providerScope,
+        name: requestedName || result.name || "Untitled Workflow",
+        description: promptText,
+        generatedPlan: result.plan,
+        nodes: remappedNodes,
+        edges: remappedEdges,
+        _suppressSuccessToast: true,
+        _suppressErrorToast: true,
+      });
+
+      const existingAgentNames = new Set(agents.map((agent) => agent.name));
+      const scopedAgentNames = [
+        ...new Set(
+          result.nodes
+            .map((node) => node.agentName)
+            .filter((agentName): agentName is string => {
+              if (typeof agentName !== "string" || agentName.length === 0) {
+                return false;
+              }
+              return !existingAgentNames.has(agentName);
+            }),
+        ),
+      ];
+
+      let scopedAgentUpsertFailed = false;
+      if (scopedAgentNames.length > 0) {
+        const scopedResults = await Promise.allSettled(
+          scopedAgentNames.map(async (agentName) => {
+            const node = result.nodes.find((candidate) => candidate.agentName === agentName);
+            const roleLabel = node?.label ?? agentName;
+            const taskDescription = node?.taskDescription ?? promptText;
+            const description = `${roleLabel}: ${taskDescription.slice(0, 150)}`;
+            const payload = {
+              name: agentName,
+              description,
+              prompt: buildScopedAgentPrompt(roleLabel, taskDescription),
+              ...(node?.model ? { model: node.model } : {}),
+              ...(node?.effort ? { effort: node.effort } : {}),
+              ...(node?.skills ? { skills: node.skills } : {}),
+            };
+            const res = await fetch(`/api/workflows/${workflow.id}/agents`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              throw new Error(`Failed to create workflow agent: ${agentName}`);
             }
-            onOpenChange(false);
-            resetForm();
-            router.push(`/workflows/${wf.id}`);
-          },
-          onError: (err) => {
-            console.error("Workflow creation failed:", err);
-            toast.error("Failed to create workflow");
-          },
+          }),
+        );
+        scopedAgentUpsertFailed = scopedResults.some(
+          (item) => item.status === "rejected",
+        );
+      }
+
+      toast.success(`Workflow "${workflow.name}" is ready`, {
+        description: scopedAgentUpsertFailed
+          ? `${remappedNodes.length} steps generated (some scoped agents could not be created)`
+          : `${remappedNodes.length} steps generated`,
+        action: {
+          label: "Open",
+          onClick: () => router.push(`/workflows/${workflow.id}`),
         },
-      );
+      });
+    } catch (err) {
+      console.error("Workflow generation failed:", err);
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Failed to generate workflow";
+      toast.error(message);
     }
   };
 
-  const resetForm = () => {
-    setName("");
-    setDescription("");
-    setPrompt("");
-    setAgentMode("ai-create");
-    setComplexity("auto");
-    setSelectedAgents(new Set());
-  };
+  const resetForm = useCallback(() => {
+    setName((prev) => (prev === "" ? prev : ""));
+    setDescription((prev) => (prev === "" ? prev : ""));
+    setPrompt((prev) => (prev === "" ? prev : ""));
+    setAgentMode((prev) => (prev === "ai-create" ? prev : "ai-create"));
+    setComplexity((prev) => (prev === "auto" ? prev : "auto"));
+    setSelectedAgents((prev) => (prev.size === 0 ? prev : new Set()));
+  }, []);
 
   const handleOpenChange = (o: boolean) => {
-    if (!o) resetForm();
+    // Only reset on an actual close transition to avoid update loops
+    // when Dialog emits repeated onOpenChange(false) while already closed.
+    if (!o && open) resetForm();
     onOpenChange(o);
   };
 
@@ -153,6 +269,7 @@ export function CreateWorkflowModal({
 
   const isValid =
     activeMode === "manual" ? name.trim().length > 0 : prompt.trim().length > 0;
+  const isBusy = createWorkflow.isPending || generateWorkflow.isPending;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -413,12 +530,12 @@ export function CreateWorkflowModal({
             size="sm"
             className="h-8"
             onClick={handleCreate}
-            disabled={!isValid || createWorkflow.isPending}
+            disabled={!isValid || isBusy}
           >
-            {createWorkflow.isPending ? (
+            {isBusy ? (
               <Loader2 size={12} className="animate-spin mr-1.5" />
             ) : null}
-            {activeMode === "ai" ? "Create & Generate" : "Create"}
+            {activeMode === "ai" ? "Generate In Background" : "Create"}
           </Button>
         </div>
       </DialogContent>

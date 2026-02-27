@@ -234,4 +234,46 @@ describe("buildCommandPrompt", () => {
       /If a step includes \[model: \.\.\.\] or \[effort: \.\.\.\]/,
     );
   });
+
+  test("includes model override and scoped skills/tool constraints", () => {
+    const nodes: WorkflowNode[] = [
+      {
+        ...makeNode("a", "Implement", [], "implementer"),
+        model: "claude-3-5-sonnet",
+        skills: ["codebase-search"],
+        overrides: {
+          model: "claude-opus-4-1",
+          systemPrompt: "Prefer minimal diffs and add tests.",
+        },
+      },
+    ];
+    const wf = makeWorkflow(nodes, {
+      scopedAgents: [
+        {
+          id: "sa-impl",
+          workflowId: "wf-1",
+          name: "implementer",
+          description: "implements changes",
+          model: "claude-sonnet-4-6",
+          effort: "high",
+          tools: ["Read", "Edit", "Bash", "mcp__filesystem__read_file"],
+          disallowedTools: ["DeleteFile"],
+          prompt: "implement safely",
+          skills: ["repo-context"],
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+
+    const prompt = buildCommandPrompt(wf);
+
+    // Node override model should win over node/scoped defaults.
+    expect(prompt).toContain("[model: claude-opus-4-1]");
+    expect(prompt).toContain("Skills: codebase-search, repo-context");
+    expect(prompt).toContain("Preferred tools: Read, Edit, Bash");
+    expect(prompt).toContain("Disallowed tools: DeleteFile");
+    expect(prompt).toContain("Step override: Prefer minimal diffs and add tests.");
+    expect(prompt).toMatch(/MCP and plugin capabilities are exposed as runtime tools/i);
+  });
 });

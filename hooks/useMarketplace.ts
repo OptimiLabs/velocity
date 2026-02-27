@@ -7,6 +7,96 @@ import type {
   SecurityAnalysisRequest,
   SecurityAnalysisResult,
 } from "@/types/security-analysis";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
+
+function extractFirstJsonObject(raw: string): string | null {
+  const start = raw.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseJsonLoose<T>(raw: string): T | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    const jsonObject = extractFirstJsonObject(trimmed);
+    if (!jsonObject) return null;
+    try {
+      return JSON.parse(jsonObject) as T;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function readErrorMessageFromBody(
+  parsed: unknown,
+  raw: string,
+  fallback: string,
+): string {
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    "error" in parsed &&
+    typeof (parsed as { error?: unknown }).error === "string"
+  ) {
+    return (parsed as { error: string }).error;
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return fallback;
+  if (trimmed.length <= 240) return trimmed;
+  return `${trimmed.slice(0, 240)}…`;
+}
 
 export function useMarketplaceSources() {
   return useQuery({
@@ -242,16 +332,37 @@ export function useAnalyzeRepo() {
       owner: string;
       repo: string;
     }): Promise<SecurityAnalysisResult> => {
-      const res = await fetch("/api/marketplace/analyze-repo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
+      const jobId = startProcessingJob({
+        title: "Analyze repository security",
+        subtitle: summarizeForJob(`${params.owner}/${params.repo}`),
+        source: "marketplace",
       });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error || "Repo analysis failed");
+      try {
+        const res = await fetch("/api/marketplace/analyze-repo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(params),
+        });
+        const raw = await res.text();
+        const parsed = parseJsonLoose<SecurityAnalysisResult & { error?: string }>(raw);
+
+        if (!res.ok) {
+          throw new Error(readErrorMessageFromBody(parsed, raw, "Repo analysis failed"));
+        }
+        if (!parsed) {
+          throw new Error("Repo analysis returned an unreadable response");
+        }
+        const result = parsed as SecurityAnalysisResult;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(`${params.owner}/${params.repo}`),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(`${params.owner}/${params.repo}`),
+        });
+        throw error;
       }
-      return res.json();
     },
   });
 }
@@ -261,16 +372,36 @@ export function useAnalyzePlugin() {
     mutationFn: async (
       params: SecurityAnalysisRequest,
     ): Promise<SecurityAnalysisResult> => {
-      const res = await fetch("/api/marketplace/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
+      const jobId = startProcessingJob({
+        title: "Analyze package security",
+        subtitle: summarizeForJob(params.name || params.url || "Marketplace item"),
+        source: "marketplace",
       });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error || "Analysis failed");
+      try {
+        const res = await fetch("/api/marketplace/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(params),
+        });
+        const raw = await res.text();
+        const parsed = parseJsonLoose<SecurityAnalysisResult & { error?: string }>(raw);
+        if (!res.ok) {
+          throw new Error(readErrorMessageFromBody(parsed, raw, "Analysis failed"));
+        }
+        if (!parsed) {
+          throw new Error("Analysis returned an unreadable response");
+        }
+        const result = parsed as SecurityAnalysisResult;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(params.name || params.url || "Analysis complete"),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(params.name || params.url || "Marketplace item"),
+        });
+        throw error;
       }
-      return res.json();
     },
   });
 }

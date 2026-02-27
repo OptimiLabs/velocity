@@ -29,6 +29,29 @@ function normalizeEffort(
   return undefined;
 }
 
+function normalizeModel(model: unknown): string | undefined {
+  if (typeof model !== "string") return undefined;
+  const normalized = model.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const normalized = item.trim();
+    if (!normalized) continue;
+    if (!out.includes(normalized)) out.push(normalized);
+  }
+  return out;
+}
+
+function formatList(values: string[], max = 6): string {
+  if (values.length <= max) return values.join(", ");
+  return `${values.slice(0, max).join(", ")} (+${values.length - max} more)`;
+}
+
 /**
  * Detect groups of nodes that can execute in parallel.
  * Uses BFS longest-path layering (same algorithm as layout.ts),
@@ -115,6 +138,14 @@ export function computeParallelGroups(nodes: WorkflowNode[]): ParallelGroup[] {
 export function buildCommandPrompt(workflow: Workflow): string {
   const { nodes } = workflow;
   const parallelGroups = computeParallelGroups(nodes);
+  const scopedModelByAgent = new Map(
+    (workflow.scopedAgents ?? [])
+      .map((agent) => {
+        const model = normalizeModel(agent.model);
+        return model ? ([agent.name, model] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, string] => entry !== null),
+  );
   const scopedEffortByAgent = new Map(
     (workflow.scopedAgents ?? [])
       .map((agent) => {
@@ -122,6 +153,24 @@ export function buildCommandPrompt(workflow: Workflow): string {
         return effort ? ([agent.name, effort] as const) : null;
       })
       .filter((entry): entry is readonly [string, "low" | "medium" | "high"] => entry !== null),
+  );
+  const scopedToolsByAgent = new Map(
+    (workflow.scopedAgents ?? []).map((agent) => [
+      agent.name,
+      normalizeStringList(agent.tools),
+    ]),
+  );
+  const scopedDisallowedToolsByAgent = new Map(
+    (workflow.scopedAgents ?? []).map((agent) => [
+      agent.name,
+      normalizeStringList(agent.disallowedTools),
+    ]),
+  );
+  const scopedSkillsByAgent = new Map(
+    (workflow.scopedAgents ?? []).map((agent) => [
+      agent.name,
+      normalizeStringList(agent.skills),
+    ]),
   );
 
   // Build a set of node IDs that are part of a parallel group for quick lookup
@@ -168,12 +217,30 @@ export function buildCommandPrompt(workflow: Workflow): string {
             .join(", ")})`
         : "";
     const agent = n.agentName ? ` [agent: ${n.agentName}]` : "";
-    const model = n.model ? ` [model: ${n.model}]` : "";
+    const stepModel =
+      normalizeModel(n.overrides?.model) ??
+      normalizeModel(n.model) ??
+      normalizeModel(n.agentName ? scopedModelByAgent.get(n.agentName) : undefined);
+    const model = stepModel ? ` [model: ${stepModel}]` : "";
     const stepEffort =
       normalizeEffort(n.overrides?.effort) ??
       normalizeEffort(n.effort) ??
       normalizeEffort(n.agentName ? scopedEffortByAgent.get(n.agentName) : undefined);
     const effort = stepEffort ? ` [effort: ${stepEffort}]` : "";
+    const stepSkills = Array.from(
+      new Set([
+        ...normalizeStringList(n.skills),
+        ...normalizeStringList(
+          n.agentName ? scopedSkillsByAgent.get(n.agentName) : undefined,
+        ),
+      ]),
+    );
+    const stepTools = normalizeStringList(
+      n.agentName ? scopedToolsByAgent.get(n.agentName) : undefined,
+    );
+    const stepDisallowedTools = normalizeStringList(
+      n.agentName ? scopedDisallowedToolsByAgent.get(n.agentName) : undefined,
+    );
     const label =
       typeof n.label === "string" && n.label.trim().length > 0
         ? n.label
@@ -185,8 +252,20 @@ export function buildCommandPrompt(workflow: Workflow): string {
     stepLines.push(
       `${i + 1}. **${label}**${depsText}${agent}${model}${effort}`,
       `   ${taskDescription}`,
-      "",
     );
+    if (stepSkills.length > 0) {
+      stepLines.push(`   Skills: ${formatList(stepSkills, 8)}`);
+    }
+    if (stepTools.length > 0) {
+      stepLines.push(`   Preferred tools: ${formatList(stepTools)}`);
+    }
+    if (stepDisallowedTools.length > 0) {
+      stepLines.push(`   Disallowed tools: ${formatList(stepDisallowedTools)}`);
+    }
+    if (n.overrides?.systemPrompt) {
+      stepLines.push(`   Step override: ${n.overrides.systemPrompt}`);
+    }
+    stepLines.push("");
   }
 
   let prompt = `You are now executing the "${workflow.name}" workflow. Do NOT describe or summarize these steps — you must actually perform each one.\n\n`;
@@ -207,7 +286,9 @@ export function buildCommandPrompt(workflow: Workflow): string {
   prompt += `1. Use the Task tool to dispatch a subagent (type "general-purpose") with a detailed prompt describing what to do\n`;
   prompt += `2. Wait for the result before moving to dependent steps\n`;
   prompt += `3. Report progress as you go\n\n`;
-  prompt += `If a step includes [model: ...] or [effort: ...], apply those settings in the dispatched subagent task prompt.\n\n`;
+  prompt += `If a step includes [model: ...] or [effort: ...], apply those settings in the dispatched subagent task prompt.\n`;
+  prompt += `Respect each step's Skills, Preferred tools, and Disallowed tools lines.\n`;
+  prompt += `MCP and plugin capabilities are exposed as runtime tools — use their exact tool names when relevant.\n\n`;
 
   if (parallelGroups.length > 0) {
     prompt += `When multiple steps share the same dependencies and no step depends on another within the group, launch them **all in a single message** using parallel Task tool calls.\n`;

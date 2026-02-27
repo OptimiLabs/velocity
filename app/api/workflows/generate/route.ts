@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { WorkflowNode, WorkflowEdge } from "@/types/workflow";
 import {
   autoLayout,
@@ -50,6 +53,20 @@ interface NormalizedTask {
   dependsOn: string[];
   skills: string[];
   effort?: EffortLevel;
+}
+
+const PORTABLE_WORKFLOW_PLANNER_DIR = path.join(
+  os.tmpdir(),
+  "velocity-workflow-planner",
+);
+
+function resolvePortablePlannerCwd(): string {
+  try {
+    fs.mkdirSync(PORTABLE_WORKFLOW_PLANNER_DIR, { recursive: true });
+    return PORTABLE_WORKFLOW_PLANNER_DIR;
+  } catch {
+    return os.tmpdir();
+  }
 }
 
 /** Normalize a name to kebab-case */
@@ -779,8 +796,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (err) {
     aiLog.error("workflow generate failed", err);
+    const details =
+      process.env.NODE_ENV !== "production"
+        ? err instanceof Error
+          ? err.message
+          : String(err)
+        : undefined;
     return NextResponse.json(
-      { error: "Failed to generate workflow" },
+      { error: "Failed to generate workflow", details },
       { status: 500 },
     );
   }
@@ -798,6 +821,7 @@ async function generateWithAI(
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 }> {
+  const plannerCwd = resolvePortablePlannerCwd();
   const hasAgents = existingAgents && existingAgents.length > 0;
   const profile = deriveGenerationProfile(prompt, complexity);
   const taskCountGuidance = deriveTaskCountGuidance(
@@ -887,13 +911,16 @@ Rules:
 - dependsOn: only reference valid step IDs. Prefer PARALLEL branches over linear chains — tasks that don't share inputs/outputs should run concurrently
 - Do NOT create single linear chains when tasks are independent. If step-2 doesn't need step-1's output, they should have no dependency
 - taskDescription must include: specific files/paths, what to create or modify, acceptance criteria, and scope boundaries. Vague descriptions like "set up the backend" are not acceptable
+- Never include machine-specific absolute paths (e.g. /Users/..., C:\\...). Use project-relative paths rooted at <project-root>
+- Do NOT reference local repository names or host-specific directory names
 - ${taskCountRule}
 - If the user request is underspecified, make practical assumptions and still return an executable "good enough" plan instead of placeholders
 - Each task should be completable in one focused session${profileBlock}${agentBlock}${skillBlock}`;
 
-  const userMessage = cwd
-    ? `Project directory: ${cwd}\n\nGoal: ${prompt}`
-    : `Goal: ${prompt}`;
+  const portabilityContext = cwd
+    ? "The execution directory is selected at runtime. Keep this workflow portable and describe file targets relative to <project-root>."
+    : "This workflow may run in any repository. Keep it portable and describe file targets relative to <project-root>.";
+  const userMessage = `Goal: ${prompt}\n\n${portabilityContext}`;
 
   const existingNameSet = hasAgents
     ? new Set(existingAgents!.map((a) => a.name))
@@ -912,7 +939,7 @@ Rules:
     });
     const raw = await aiGenerate(fullUserMessage, {
       system: systemPrompt,
-      cwd,
+      cwd: plannerCwd,
       model: requestedModel,
       timeoutMs: 600_000,
     });

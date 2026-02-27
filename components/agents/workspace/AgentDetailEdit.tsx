@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -17,13 +17,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Wrench, Server, Plug, Puzzle, X, Plus, Sparkles, Info } from "lucide-react";
-import {
-  EffortPicker,
-  type EffortLevel,
-} from "@/components/console/EffortPicker";
+import { Puzzle, X, Plus, Sparkles, Info } from "lucide-react";
+import { type EffortLevel } from "@/components/console/EffortPicker";
 import { CATEGORY_OPTIONS } from "@/lib/agents/categories";
-import { cn } from "@/lib/utils";
 import type { Agent } from "@/types/agent";
 import type { ConfigProvider } from "@/types/provider";
 import type { WorkflowNodeOverrides } from "@/types/workflow";
@@ -38,6 +34,7 @@ import {
   CODEX_MODEL_OPTIONS,
   GEMINI_MODEL_OPTIONS,
 } from "@/lib/models/provider-models";
+import { ToolMultiSelect } from "@/components/agents/ToolMultiSelect";
 
 interface ToolInfo {
   name: string;
@@ -51,56 +48,14 @@ interface SnippetInfo {
   category: string;
 }
 
+const MODEL_INHERIT_VALUE = "__inherit__";
+const EFFORT_AUTO_VALUE = "__auto__";
+
 const PROVIDER_MODELS: Record<ConfigProvider, readonly string[]> = {
   claude: CLAUDE_AGENT_MODEL_OPTIONS.map((model) => model.id),
   codex: CODEX_MODEL_OPTIONS.map((model) => model.id),
   gemini: GEMINI_MODEL_OPTIONS.map((model) => model.id),
 };
-
-function ToolIcon({ type }: { type: string }) {
-  if (type === "mcp") return <Server size={9} className="text-chart-1" />;
-  if (type === "plugin") return <Plug size={9} className="text-chart-4" />;
-  return <Wrench size={9} className="text-muted-foreground" />;
-}
-
-function ToolSection({
-  label,
-  tools,
-  activeColor,
-  selectedTools,
-  onToggle,
-}: {
-  label: string;
-  tools: ToolInfo[];
-  activeColor: string;
-  selectedTools: Set<string>;
-  onToggle: (name: string) => void;
-}) {
-  if (tools.length === 0) return null;
-  return (
-    <div>
-      <div className="text-meta text-muted-foreground/60 mb-1">{label}</div>
-      <div className="flex flex-wrap gap-1">
-        {tools.map((tool) => (
-          <button
-            key={tool.name}
-            onClick={() => onToggle(tool.name)}
-            title={tool.description}
-            className={cn(
-              "flex items-center gap-1 px-1.5 py-0.5 rounded text-meta font-mono border transition-colors",
-              selectedTools.has(tool.name)
-                ? activeColor
-                : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground",
-            )}
-          >
-            <ToolIcon type={tool.type} />
-            {tool.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 interface AgentDetailEditProps {
   agent: Partial<Agent> | null;
@@ -137,8 +92,10 @@ export function AgentDetailEdit({
   const [prompt, setPrompt] = useState(
     workflowOverrides?.systemPrompt ?? agent?.prompt ?? "",
   );
-  const [selectedTools, setSelectedTools] = useState<Set<string>>(
-    new Set(agent?.tools || []),
+  const [selectedDisallowedTools, setSelectedDisallowedTools] = useState<
+    Set<string>
+  >(
+    new Set(agent?.disallowedTools || []),
   );
   const [selectedSkills, setSelectedSkills] = useState<string[]>(
     agent?.skills || [],
@@ -152,6 +109,22 @@ export function AgentDetailEdit({
   const trimmedModel = model.trim();
   const hasCustomModelOption =
     trimmedModel.length > 0 && !providerModelOptions.includes(trimmedModel);
+  const modelSelectOptions = useMemo(() => {
+    const base: Array<{ value: string; label: string }> = [
+      { value: MODEL_INHERIT_VALUE, label: getAgentModelOptionLabel("", provider) },
+      ...providerModelOptions.map((value) => ({
+        value,
+        label: getAgentModelOptionLabel(value, provider),
+      })),
+    ];
+    if (hasCustomModelOption) {
+      base.splice(1, 0, {
+        value: trimmedModel,
+        label: `Current (${getAgentModelOptionLabel(trimmedModel, provider)})`,
+      });
+    }
+    return base;
+  }, [provider, providerModelOptions, hasCustomModelOption, trimmedModel]);
 
   const isEditing = !!agent?.name;
 
@@ -166,16 +139,21 @@ export function AgentDetailEdit({
       .catch((err) => console.debug('[AGENTS]', err.message));
   }, []);
 
-  const toggleTool = (toolName: string) => {
-    setSelectedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(toolName)) next.delete(toolName);
-      else next.add(toolName);
-      return next;
-    });
-  };
+  const pluginToolNames = useMemo(
+    () =>
+      new Set(
+        availableTools
+          .filter((tool) => tool.type === "plugin")
+          .map((tool) => tool.name),
+      ),
+    [availableTools],
+  );
+
+  const withoutPluginTools = (tools: Iterable<string>) =>
+    Array.from(tools).filter((tool) => !pluginToolNames.has(tool));
 
   const handleSave = () => {
+    const cleanedDisallowedTools = withoutPluginTools(selectedDisallowedTools);
     if (workflowMode && onSaveOverrides) {
       // Only include fields that differ from the base agent
       const overrides: WorkflowNodeOverrides = {};
@@ -196,7 +174,8 @@ export function AgentDetailEdit({
       effort,
       category,
       prompt,
-      tools: [...selectedTools],
+      tools: agent?.tools,
+      disallowedTools: cleanedDisallowedTools,
       skills: selectedSkills,
     });
   };
@@ -217,9 +196,9 @@ export function AgentDetailEdit({
       if (typeof draft.category === "string" && draft.category.trim().length > 0) {
         setCategory(draft.category);
       }
-      if (Array.isArray(draft.tools)) {
-        setSelectedTools(
-          new Set(draft.tools.filter((tool): tool is string => typeof tool === "string")),
+      if (Array.isArray(draft.disallowedTools)) {
+        setSelectedDisallowedTools(
+          new Set(withoutPluginTools(draft.disallowedTools)),
         );
       }
       if (Array.isArray(draft.skills)) {
@@ -230,9 +209,13 @@ export function AgentDetailEdit({
     }
   };
 
-  const builtinTools = availableTools.filter((t) => t.type === "builtin");
-  const mcpTools = availableTools.filter((t) => t.type === "mcp");
-  const pluginTools = availableTools.filter((t) => t.type === "plugin");
+  const selectableTools = availableTools.filter(
+    (tool) => tool.type === "builtin" || tool.type === "mcp",
+  );
+  const selectableToolNames = new Set(selectableTools.map((tool) => tool.name));
+  const selectedVisibleTools = [...selectedDisallowedTools].filter((tool) =>
+    selectableToolNames.has(tool),
+  );
 
   const snippetNameMap = new Map(availableSnippets.map((s) => [s.id, s.name]));
   const unattachedSnippets = availableSnippets.filter(
@@ -260,8 +243,8 @@ export function AgentDetailEdit({
         />
       </div>
 
-      <div className="grid grid-cols-[5fr_7fr] gap-2">
-        <div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
           <label className="text-meta uppercase tracking-wider text-muted-foreground/50">
             <span className="inline-flex items-center gap-1">
               Model
@@ -284,26 +267,18 @@ export function AgentDetailEdit({
             </span>
           </label>
           <Select
-            value={model.trim() ? model : "__inherit__"}
+            value={model || MODEL_INHERIT_VALUE}
             onValueChange={(value) =>
-              setModel(value === "__inherit__" ? "" : value)
+              setModel(value === MODEL_INHERIT_VALUE ? "" : value)
             }
           >
-            <SelectTrigger className="h-7 text-xs mt-1">
+            <SelectTrigger className="h-8 mt-1 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__inherit__">
-                {getAgentModelOptionLabel("", provider)}
-              </SelectItem>
-              {hasCustomModelOption && (
-                <SelectItem value={trimmedModel}>
-                  Current ({getAgentModelOptionLabel(trimmedModel, provider)})
-                </SelectItem>
-              )}
-              {providerModelOptions.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {getAgentModelOptionLabel(m, provider)}
+              {modelSelectOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -321,7 +296,26 @@ export function AgentDetailEdit({
           <label className="text-meta uppercase tracking-wider text-muted-foreground/50">
             Effort
           </label>
-          <EffortPicker value={effort} onChange={setEffort} className="mt-1" />
+          <Select
+            value={effort ?? EFFORT_AUTO_VALUE}
+            onValueChange={(value) =>
+              setEffort(
+                value === EFFORT_AUTO_VALUE
+                  ? undefined
+                  : (value as Exclude<EffortLevel, undefined>),
+              )
+            }
+          >
+            <SelectTrigger className="h-8 mt-1 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={EFFORT_AUTO_VALUE}>Auto</SelectItem>
+              <SelectItem value="low">Low</SelectItem>
+              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="high">High</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
@@ -360,35 +354,18 @@ export function AgentDetailEdit({
       {!workflowMode && (
         <div>
           <label className="text-meta uppercase tracking-wider text-muted-foreground/50">
-            Tools
+            Blocked Tools
           </label>
-          <div className="mt-1 space-y-2 max-h-[140px] overflow-y-auto">
-            <ToolSection
-              label="Builtin"
-              tools={builtinTools}
-              activeColor="border-primary/50 bg-primary/10 text-primary"
-              selectedTools={selectedTools}
-              onToggle={toggleTool}
+          <div className="mt-1 space-y-1.5">
+            <ToolMultiSelect
+              tools={selectableTools}
+              selected={selectedVisibleTools}
+              onChange={(next) => setSelectedDisallowedTools(new Set(next))}
+              emptyLabel="No blocked tools"
             />
-            <ToolSection
-              label="MCP Servers"
-              tools={mcpTools}
-              activeColor="border-chart-1/50 bg-chart-1/10 text-chart-1"
-              selectedTools={selectedTools}
-              onToggle={toggleTool}
-            />
-            <ToolSection
-              label="Plugins"
-              tools={pluginTools}
-              activeColor="border-chart-4/50 bg-chart-4/10 text-chart-4"
-              selectedTools={selectedTools}
-              onToggle={toggleTool}
-            />
-            {availableTools.length === 0 && (
-              <div className="text-meta text-text-tertiary">
-                Loading tools...
-              </div>
-            )}
+            <p className="text-meta text-muted-foreground/70">
+              Multi-select built-in and MCP tools this agent should not use.
+            </p>
           </div>
         </div>
       )}
@@ -457,10 +434,10 @@ export function AgentDetailEdit({
             type="button"
             variant="outline"
             size="sm"
-            className="h-6 px-2 text-[11px]"
+            className="h-8 px-3 text-xs font-medium"
             onClick={() => setAiEditOpen(true)}
           >
-            <Sparkles size={10} className="mr-1" />
+            <Sparkles size={12} className="mr-1.5" />
             AI Edit
           </Button>
         </div>
@@ -497,8 +474,14 @@ export function AgentDetailEdit({
         onClose={() => setAiEditOpen(false)}
         onSave={handleApplyAIDraft}
         mode="edit"
-        title={workflowMode ? "AI Edit Workflow Override" : "AI Edit Agent"}
-        actionLabel="Apply Draft"
+        title={workflowMode ? "AI Edit Agent Override" : "AI Edit Agent"}
+        actionLabel={workflowMode ? "Apply Override Draft" : "Apply Draft"}
+        dialogVariant={workflowMode ? "workflow-override" : "default"}
+        contextNote={
+          workflowMode
+            ? "Edits apply only to this agent override in the current workflow. Other agents and the workflow graph are unchanged."
+            : undefined
+        }
         initialAgent={{
           name,
           description,
@@ -506,8 +489,9 @@ export function AgentDetailEdit({
           effort,
           category,
           prompt,
+          disallowedTools: [...selectedDisallowedTools],
           ...(!workflowMode
-            ? { tools: [...selectedTools], skills: selectedSkills }
+            ? { tools: agent?.tools, skills: selectedSkills }
             : {}),
         }}
         existingAgents={existingAgents}

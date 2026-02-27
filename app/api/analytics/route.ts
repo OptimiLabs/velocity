@@ -53,6 +53,7 @@ export async function GET(request: Request) {
         COALESCE(AVG(p95_latency_ms), 0) as avg_p95_latency_ms
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
         ${filterSql}
       GROUP BY strftime('%Y-%m-%d %H:00', created_at)
       ORDER BY date ASC
@@ -79,6 +80,7 @@ export async function GET(request: Request) {
           COALESCE(AVG(p95_latency_ms), 0) as avg_p95_latency_ms
         FROM sessions
         WHERE created_at >= ? AND created_at < ?
+          AND message_count > 0
           ${filterSql}
         GROUP BY DATE(created_at)
         ORDER BY date ASC
@@ -104,6 +106,7 @@ export async function GET(request: Request) {
         COALESCE(AVG(session_duration_ms), 0) as avg_session_duration_ms
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
         ${filterSql}
     `,
       )
@@ -132,6 +135,7 @@ export async function GET(request: Request) {
         COALESCE(AVG(session_duration_ms), 0) as avg_session_duration_ms
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
         ${filterSql}
     `,
       )
@@ -156,6 +160,7 @@ export async function GET(request: Request) {
           COALESCE(AVG(p95_latency_ms), 0) as avg_p95_latency_ms
         FROM sessions
         WHERE created_at >= ? AND created_at < ?
+          AND message_count > 0
         GROUP BY DATE(created_at)
         ORDER BY date ASC
       `,
@@ -180,6 +185,7 @@ export async function GET(request: Request) {
         COALESCE(AVG(session_duration_ms), 0) as avg_session_duration_ms
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
 `,
       )
       .get(from, toExclusive);
@@ -207,6 +213,7 @@ export async function GET(request: Request) {
         COALESCE(AVG(session_duration_ms), 0) as avg_session_duration_ms
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
 `,
       )
       .get(prevFrom, prevToExclusive);
@@ -225,6 +232,7 @@ export async function GET(request: Request) {
         COUNT(*) as total_sessions
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
         ${filterSql}
       GROUP BY week
       ORDER BY week ASC
@@ -242,6 +250,7 @@ export async function GET(request: Request) {
         COUNT(*) as total_sessions
       FROM sessions
       WHERE created_at >= ? AND created_at < ?
+        AND message_count > 0
       GROUP BY week
       ORDER BY week ASC
     `,
@@ -258,7 +267,7 @@ export async function GET(request: Request) {
     .prepare(
       `
     SELECT COUNT(*) as cnt, MIN(total_cost) as min_cost, MAX(total_cost) as max_cost, AVG(total_cost) as avg_cost
-    FROM sessions WHERE created_at >= ? AND created_at < ? AND total_cost > 0 ${filterSql}
+    FROM sessions WHERE created_at >= ? AND created_at < ? AND message_count > 0 AND total_cost > 0 ${filterSql}
   `,
     )
     .get(...costParams) as
@@ -273,7 +282,7 @@ export async function GET(request: Request) {
           SELECT total_cost,
             ROW_NUMBER() OVER (ORDER BY total_cost) as rn,
             COUNT(*) OVER () as cnt
-        FROM sessions WHERE created_at >= ? AND created_at < ? AND total_cost > 0 ${filterSql}
+        FROM sessions WHERE created_at >= ? AND created_at < ? AND message_count > 0 AND total_cost > 0 ${filterSql}
       ) sub
       WHERE rn IN (
         MAX(1, CAST(cnt * 0.5 AS INT)), MAX(1, CAST(cnt * 0.75 AS INT)),

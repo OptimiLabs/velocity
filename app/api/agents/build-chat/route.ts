@@ -14,6 +14,61 @@ type BuilderProvider =
   | "custom"
   | "claude-cli";
 
+type EditableAgentConfig = {
+  name?: string;
+  description?: string;
+  model?: string;
+  effort?: "low" | "medium" | "high";
+  prompt?: string;
+  tools?: string[];
+  disallowedTools?: string[];
+  skills?: string[];
+};
+
+function normalizeEditableConfig(value: unknown): EditableAgentConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const next: EditableAgentConfig = {};
+
+  if (typeof raw.name === "string" && raw.name.trim()) {
+    next.name = raw.name.trim();
+  }
+  if (typeof raw.description === "string" && raw.description.trim()) {
+    next.description = raw.description.trim();
+  }
+  if (typeof raw.model === "string" && raw.model.trim()) {
+    next.model = raw.model.trim();
+  }
+  if (
+    raw.effort === "low" ||
+    raw.effort === "medium" ||
+    raw.effort === "high"
+  ) {
+    next.effort = raw.effort;
+  }
+  if (typeof raw.prompt === "string" && raw.prompt.trim()) {
+    next.prompt = raw.prompt.trim();
+  }
+
+  const normalizeStringArray = (input: unknown): string[] | undefined => {
+    if (!Array.isArray(input)) return undefined;
+    const values = input.filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    );
+    return values.length > 0 ? values : undefined;
+  };
+
+  const tools = normalizeStringArray(raw.tools);
+  if (tools) next.tools = tools;
+  const disallowedTools = normalizeStringArray(raw.disallowedTools);
+  if (disallowedTools) next.disallowedTools = disallowedTools;
+  const skills = normalizeStringArray(raw.skills);
+  if (skills) next.skills = skills;
+
+  return Object.keys(next).length > 0 ? next : null;
+}
+
 function getModelRule(provider: BuilderProvider): string {
   if (provider === "claude-cli" || provider === "anthropic") {
     return `The "model" should be one of: "opus", "sonnet", "haiku"`;
@@ -50,6 +105,7 @@ Always include the current complete agent configuration as a fenced code block w
   "model": "${exampleModel}",
   "effort": "high",
   "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+  "disallowedTools": ["Bash"],
   "color": "#3b82f6",
   "prompt": "You are a specialized agent that..."
 }
@@ -60,6 +116,7 @@ Rules:
 - ${modelRule}
 - The "effort" must be one of: "low", "medium", "high"
 - Available tools include: Read, Write, Edit, Bash, Glob, Grep, Task, WebFetch, WebSearch, NotebookEdit
+- Prefer expressing restrictions via "disallowedTools" when the user wants to block specific tools
 - The "prompt" should be a detailed system prompt for the agent, covering its purpose, guidelines, and workflow
 - The "color" should be one of these hex values: #ef4444, #f97316, #eab308, #22c55e, #3b82f6, #7c3aed, #ec4899, #06b6d4
 - The "description" should be a single sentence summarizing the agent's purpose
@@ -74,10 +131,12 @@ Keep your conversational responses concise — focus on explaining key design de
 
 export async function POST(request: Request) {
   try {
-    const { messages, existingAgents, provider } = (await request.json()) as {
+    const { messages, existingAgents, provider, currentConfig } =
+      (await request.json()) as {
       messages: Array<{ role: "user" | "assistant"; content: string }>;
       existingAgents?: { name: string; description: string }[];
       provider?: BuilderProvider;
+      currentConfig?: unknown;
     };
 
     const validMessages = Array.isArray(messages)
@@ -122,9 +181,14 @@ export async function POST(request: Request) {
         ? `\n\nExisting agents (avoid duplicating these):\n${existingAgents.map((a) => `- "${a.name}": ${a.description}`).join("\n")}\nCreate something distinct and complementary.`
         : "";
 
+    const normalizedCurrentConfig = normalizeEditableConfig(currentConfig);
+    const currentConfigBlock = normalizedCurrentConfig
+      ? `\n\nCurrent agent config (edit in-place):\n\`\`\`json\n${JSON.stringify(normalizedCurrentConfig, null, 2)}\n\`\`\`\nWhen responding, iterate from this existing config and preserve unchanged fields unless the user explicitly requests changes.`
+      : "";
+
     const resolvedProvider: BuilderProvider = provider ?? "claude-cli";
     const systemPromptWithContext =
-      buildSystemPrompt(resolvedProvider) + existingBlock;
+      buildSystemPrompt(resolvedProvider) + existingBlock + currentConfigBlock;
 
     const fullPrompt = `${conversationText}\n\nAssistant:`;
 

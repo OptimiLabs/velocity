@@ -68,7 +68,7 @@ describe("initSchema legacy boot safety", () => {
           "SELECT value FROM index_metadata WHERE key = 'schema_version'",
         )
         .get() as { value: string } | undefined;
-      expect(versionRow?.value).toBe("36");
+      expect(versionRow?.value).toBe("38");
     } finally {
       db.close();
       for (const suffix of ["", "-wal", "-shm"]) {
@@ -130,13 +130,16 @@ describe("initSchema legacy boot safety", () => {
       expect(names.has("idx_sessions_active_modified")).toBe(true);
       expect(names.has("idx_sessions_active_created")).toBe(true);
       expect(names.has("idx_sessions_parent_created")).toBe(true);
+      expect(names.has("idx_sessions_provider_modified")).toBe(true);
+      expect(names.has("idx_sessions_provider_created")).toBe(true);
+      expect(names.has("idx_sessions_provider_project_path")).toBe(true);
 
       const versionRow = db
         .prepare(
           "SELECT value FROM index_metadata WHERE key = 'schema_version'",
         )
         .get() as { value: string } | undefined;
-      expect(versionRow?.value).toBe("36");
+      expect(versionRow?.value).toBe("38");
     } finally {
       db.close();
       for (const suffix of ["", "-wal", "-shm"]) {

@@ -107,6 +107,21 @@ describe("resolveActivePane", () => {
     expect(result.kind).toBe("context");
   });
 
+  it("falls back to terminal when settings pane exists but is disabled for this view", () => {
+    const settingsLeaf = makeLeaf("settings-1", "settings");
+    const t1 = makeLeaf("t1", "terminal", "term-1");
+    const tree = makeSplit([t1, settingsLeaf]);
+    const result = resolveActivePane({
+      ...defaults,
+      paneTree: tree,
+      activePaneId: "settings-1",
+      terminalLeaves: [t1],
+      settingsLeafExists: false,
+    });
+    expect(result.kind).toBe("terminal");
+    expect(result.activeTerminalPaneId).toBe("t1");
+  });
+
   it("falls back to terminal when activePaneId is non-existent and terminals exist", () => {
     const t1 = makeLeaf("t1", "terminal", "term-1");
     const result = resolveActivePane({

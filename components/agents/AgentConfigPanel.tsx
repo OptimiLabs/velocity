@@ -10,9 +10,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  Wrench,
-  Server,
-  Plug,
   ChevronDown,
   ChevronRight,
   Info,
@@ -25,6 +22,7 @@ import {
   getAgentModelOptionLabel,
   INHERIT_MODEL_HELP,
 } from "@/lib/agents/model-display";
+import { ToolMultiSelect } from "@/components/agents/ToolMultiSelect";
 
 interface ToolInfo {
   name: string;
@@ -56,26 +54,25 @@ const COLORS = [
   "#06b6d4",
 ];
 
-function ToolIcon({ type }: { type: string }) {
-  if (type === "mcp") return <Server size={9} className="text-chart-1" />;
-  if (type === "plugin") return <Plug size={9} className="text-chart-4" />;
-  return <Wrench size={9} className="text-muted-foreground" />;
-}
-
 export function AgentConfigPanel({
   config,
   onChange,
   availableTools,
 }: AgentConfigPanelProps) {
   const [promptExpanded, setPromptExpanded] = useState(false);
-  const selectedTools = new Set(config.tools || []);
+  const selectedDisallowedTools = new Set(config.disallowedTools || []);
   const provider = config.provider;
   const selectedModel = typeof config.model === "string" ? config.model : "";
   const selectedModelInfo = getAgentModelDisplay(selectedModel, provider);
 
-  const builtinTools = availableTools.filter((t) => t.type === "builtin");
-  const mcpTools = availableTools.filter((t) => t.type === "mcp");
-  const pluginTools = availableTools.filter((t) => t.type === "plugin");
+  const selectableTools = availableTools.filter(
+    (tool) =>
+      tool.type === "builtin" || tool.type === "mcp" || tool.type === "skill",
+  );
+  const selectableToolNames = new Set(selectableTools.map((tool) => tool.name));
+  const selectedVisibleTools = [...selectedDisallowedTools].filter((tool) =>
+    selectableToolNames.has(tool),
+  );
 
   // Auto-expand prompt when it first gets content
   useEffect(() => {
@@ -85,50 +82,6 @@ export function AgentConfigPanel({
     // Only trigger on prompt changes, not on promptExpanded
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.prompt]);
-
-  const toggleTool = (toolName: string) => {
-    const tools = new Set(config.tools || []);
-    if (tools.has(toolName)) tools.delete(toolName);
-    else tools.add(toolName);
-    onChange({ ...config, tools: [...tools] });
-  };
-
-  const ToolChips = ({
-    tools,
-    activeColor,
-    label,
-  }: {
-    tools: ToolInfo[];
-    activeColor: string;
-    label: string;
-  }) => {
-    if (tools.length === 0) return null;
-    return (
-      <div>
-        <div className="text-[10px] text-muted-foreground/50 mb-0.5">
-          {label}
-        </div>
-        <div className="flex flex-wrap gap-0.5">
-          {tools.map((tool) => (
-            <button
-              key={tool.name}
-              onClick={() => toggleTool(tool.name)}
-              title={tool.description}
-              className={cn(
-                "flex items-center gap-0.5 px-1 py-px rounded text-[10px] font-mono border transition-colors",
-                selectedTools.has(tool.name)
-                  ? `${activeColor} text-primary`
-                  : "border-border/40 text-muted-foreground/60 hover:border-border hover:text-foreground",
-              )}
-            >
-              <ToolIcon type={tool.type} />
-              {tool.name}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="space-y-2.5 text-xs">
@@ -258,37 +211,26 @@ export function AgentConfigPanel({
         </div>
       </div>
 
-      {/* Tools */}
+      {/* Blocked Tools */}
       <div>
         <label className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
-          Tools
-          {selectedTools.size > 0 && (
+          Blocked Tools
+          {selectedVisibleTools.length > 0 && (
             <span className="ml-1 text-foreground/40">
-              ({selectedTools.size})
+              ({selectedVisibleTools.length})
             </span>
           )}
         </label>
-        <div className="mt-0.5 space-y-1 max-h-[120px] overflow-y-auto">
-          <ToolChips
-            label="Builtin"
-            tools={builtinTools}
-            activeColor="border-primary/50 bg-primary/10"
+        <div className="mt-0.5 space-y-1">
+          <ToolMultiSelect
+            tools={selectableTools}
+            selected={selectedVisibleTools}
+            onChange={(next) => onChange({ ...config, disallowedTools: next })}
+            emptyLabel="No blocked tools"
           />
-          <ToolChips
-            label="MCP"
-            tools={mcpTools}
-            activeColor="border-chart-1/50 bg-chart-1/10"
-          />
-          <ToolChips
-            label="Plugins"
-            tools={pluginTools}
-            activeColor="border-chart-4/50 bg-chart-4/10"
-          />
-          {availableTools.length === 0 && (
-            <span className="text-[10px] text-text-quaternary">
-              Loading tools...
-            </span>
-          )}
+          <p className="text-[10px] text-muted-foreground/70">
+            Multi-select built-in, MCP, and skill tools this agent should avoid.
+          </p>
         </div>
       </div>
 

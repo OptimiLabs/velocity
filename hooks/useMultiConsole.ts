@@ -12,6 +12,7 @@ import {
   clearPromptTracker,
 } from "@/lib/console/terminal-cache";
 import { useSettings } from "@/hooks/useSettings";
+import { useAppSettings } from "@/hooks/useAppSettings";
 import type { ConsoleSession, SessionGroup } from "@/types/console";
 
 // Extracted modules
@@ -29,18 +30,10 @@ import {
 import { useConsoleWs } from "@/hooks/useConsoleWs";
 import { useSessionGroups } from "@/hooks/useSessionGroups";
 import { useSessionCrud } from "@/hooks/useSessionCrud";
+import { DEFAULT_CONSOLE_CWD } from "@/lib/console/cwd";
 
-function getLastCwd(sessions: Map<string, ConsoleSession>): string {
-  const sorted = [...sessions.values()].sort(
-    (a, b) => b.createdAt - a.createdAt,
-  );
-  if (sorted[0]?.cwd) return sorted[0].cwd;
-  const stored =
-    typeof window !== "undefined"
-      ? localStorage.getItem("claude-console-last-cwd")
-      : null;
-  if (stored) return stored;
-  return "~";
+function getLastCwd(): string {
+  return DEFAULT_CONSOLE_CWD;
 }
 
 export function useMultiConsole() {
@@ -71,10 +64,18 @@ export function useMultiConsole() {
 
   // --- Global settings ---
   const { data: globalSettings } = useSettings();
-  const settingsRef = useRef(globalSettings);
+  const { data: appSettings } = useAppSettings();
+  const mergedSettings = useMemo(
+    () => ({
+      ...(globalSettings ?? {}),
+      ...(appSettings ?? {}),
+    }),
+    [globalSettings, appSettings],
+  );
+  const settingsRef = useRef(mergedSettings);
   useEffect(() => {
-    settingsRef.current = globalSettings;
-  }, [globalSettings]);
+    settingsRef.current = mergedSettings;
+  }, [mergedSettings]);
 
   // --- Terminal cleanup utility ---
   const cleanupTerminalArtifacts = useCallback((terminalId: string) => {
@@ -145,7 +146,7 @@ export function useMultiConsole() {
   });
 
   // --- Step 2: WebSocket (provides safeSend) ---
-  const { wsRef, wsVersion, safeSend } = useConsoleWs({
+  const { wsRef, wsVersion, wsState, safeSend } = useConsoleWs({
     sessionsRef,
     activeIdRef,
     deletedSessionIdsRef,
@@ -175,6 +176,7 @@ export function useMultiConsole() {
     stopSession,
     removeSession,
     renameSession,
+    updateSessionEnv,
     restartSession,
     sendModelChange,
     archiveSession,
@@ -346,7 +348,7 @@ export function useMultiConsole() {
     () => [...groups.values()].sort((a, b) => b.createdAt - a.createdAt),
     [groups],
   );
-  const lastCwd = useCallback(() => getLastCwd(sessions), [sessions]);
+  const lastCwd = useCallback(() => getLastCwd(), []);
 
   // --- Return combined API (same shape as before) ---
   return {
@@ -362,12 +364,14 @@ export function useMultiConsole() {
     stopSession,
     removeSession,
     renameSession,
+    updateSessionEnv,
     restartSession,
     sendModelChange,
     archiveSession,
     restoreSession,
     wsRef,
     wsVersion,
+    wsState,
     getLastCwd: lastCwd,
     // Group management
     groups,

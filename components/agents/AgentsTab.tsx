@@ -27,6 +27,9 @@ import {
   ArrowUpDown,
   Trash2,
   X,
+  Merge,
+  Pencil,
+  Copy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/types/agent";
@@ -36,6 +39,8 @@ import { toast } from "sonner";
 
 const PAGE_SIZE = 20;
 const ALL_WORKFLOWS_VALUE = "__all_workflows__";
+const TOKEN_HINT =
+  "Estimated from agent prompt text length (word-count proxy). This is not runtime usage tokens.";
 
 const SORT_COLUMNS = [
   { key: "name", label: "Name", align: "left" },
@@ -110,6 +115,11 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
   const [workflowFilter, setWorkflowFilter] = useState(ALL_WORKFLOWS_VALUE);
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    agent: Agent;
+  } | null>(null);
   const workflowNamesInAgents = useMemo(() => {
     const names = new Set<string>();
     for (const agent of agents ?? []) {
@@ -316,6 +326,82 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
     setEditorOpen(true);
   };
 
+  const buildMergedDraft = (agentsToMerge: Agent[]): Partial<Agent> => {
+    const uniqueByName = new Map<string, Agent>();
+    for (const agent of agentsToMerge) {
+      if (!uniqueByName.has(agent.name)) uniqueByName.set(agent.name, agent);
+    }
+    const ordered = Array.from(uniqueByName.values());
+    const base = ordered[0];
+    const mergedName =
+      ordered.length > 1 ? `${base.name}-merged` : `${base.name}-copy`;
+    const effortRank: Record<"low" | "medium" | "high", number> = {
+      low: 1,
+      medium: 2,
+      high: 3,
+    };
+    const mergedEffort = ordered.reduce<"low" | "medium" | "high" | undefined>(
+      (best, current) => {
+        if (!current.effort) return best;
+        if (!best) return current.effort;
+        return effortRank[current.effort] > effortRank[best]
+          ? current.effort
+          : best;
+      },
+      undefined,
+    );
+    const mergedTools = Array.from(
+      new Set(ordered.flatMap((agent) => agent.tools ?? [])),
+    );
+    const mergedDeniedTools = Array.from(
+      new Set(ordered.flatMap((agent) => agent.disallowedTools ?? [])),
+    );
+    const mergedCategory =
+      ordered.every((agent) => agent.category === base.category)
+        ? base.category
+        : undefined;
+    const mergedModel =
+      ordered.every((agent) => agent.model === base.model) ? base.model : undefined;
+    const mergedDescription = `Merged from: ${ordered.map((agent) => agent.name).join(", ")}`;
+    const mergedPromptSections = ordered
+      .map(
+        (agent, index) =>
+          `## Source ${index + 1}: ${agent.name}\n\n${agent.prompt?.trim() || "(No prompt provided)"}`,
+      )
+      .join("\n\n");
+    const mergedPrompt = `You are a merged assistant that combines the strengths of the source agents below.\nPrioritize the source section that best matches the task, and avoid conflicting or duplicate work.\n\n${mergedPromptSections}`;
+
+    return {
+      ...base,
+      name: mergedName,
+      description: mergedDescription,
+      model: mergedModel,
+      effort: mergedEffort,
+      tools: mergedTools.length > 0 ? mergedTools : undefined,
+      disallowedTools:
+        mergedDeniedTools.length > 0 ? mergedDeniedTools : undefined,
+      category: mergedCategory,
+      prompt: mergedPrompt,
+      filePath: undefined,
+      source: "custom",
+      usageCount: undefined,
+      lastUsed: undefined,
+      avgCost: undefined,
+      workflowNames: undefined,
+    };
+  };
+
+  const handleMergeSelected = () => {
+    const selectedAgents = filtered.filter((agent) => selected.has(agent.name));
+    if (selectedAgents.length < 2) {
+      toast.error("Select at least 2 agents to merge");
+      return;
+    }
+    setEditingAgent(buildMergedDraft(selectedAgents));
+    setEditorOpen(true);
+    setContextMenu(null);
+  };
+
   const handleAIGenerated = (config: Partial<Agent>) => {
     setEditingAgent(config);
     setEditorOpen(true);
@@ -327,6 +413,20 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
     setSourceFilter("all");
     setWorkflowFilter(ALL_WORKFLOWS_VALUE);
   }, [provider]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   return (
     <div className="flex flex-col h-full">
@@ -454,8 +554,13 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
                     <th className="py-2 px-3 font-medium text-left">Tools</th>
                     <th className="py-2 px-3 font-medium text-left">Skills</th>
                     <th className="py-2 px-3 font-medium text-left">Workflows</th>
-                    <th className="py-2 px-3 font-medium text-right whitespace-nowrap">
-                      Tokens
+                    <th
+                      className="py-2 px-3 font-medium text-right whitespace-nowrap"
+                      title={TOKEN_HINT}
+                    >
+                      <span className="cursor-help underline decoration-dotted underline-offset-2">
+                        Tokens
+                      </span>
                     </th>
                     <SortHeader column={SORT_COLUMNS[2]} currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
                     <SortHeader column={SORT_COLUMNS[3]} currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
@@ -474,6 +579,14 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
                       onDelete={handleDelete}
                       onDuplicate={handleDuplicate}
                       onToggleEnabled={handleToggleEnabled}
+                      onContextMenu={(event, rowAgent) => {
+                        event.preventDefault();
+                        setContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          agent: rowAgent,
+                        });
+                      }}
                     />
                   ))}
                 </tbody>
@@ -532,9 +645,59 @@ export function AgentsTab({ onBack, initialSearch, provider }: AgentsTabProps) {
           >
             <Trash2 size={12} /> Delete
           </Button>
+          {selected.size >= 2 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full text-xs gap-1.5 h-7"
+              onClick={handleMergeSelected}
+            >
+              <Merge size={12} /> Merge
+            </Button>
+          )}
           <Button variant="ghost" size="sm" className="rounded-full h-7" onClick={() => setSelected(new Set())}>
             <X size={14} /> Clear
           </Button>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[170px] rounded-md border border-border bg-card py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+            onClick={() => {
+              handleEdit(contextMenu.agent);
+              setContextMenu(null);
+            }}
+          >
+            <Pencil size={12} />
+            Edit
+          </button>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+            onClick={() => {
+              handleDuplicate(contextMenu.agent);
+              setContextMenu(null);
+            }}
+          >
+            <Copy size={12} />
+            Duplicate
+          </button>
+          {selected.size >= 2 && (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+              onClick={() => {
+                handleMergeSelected();
+              }}
+            >
+              <Merge size={12} />
+              Merge Selected
+            </button>
+          )}
         </div>
       )}
     </div>

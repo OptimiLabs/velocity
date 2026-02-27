@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { useProviderScopeStore } from "@/stores/providerScopeStore";
 import { isProviderSupportedForConfigRoute } from "@/lib/providers/config-scope";
 import { getAllSessionProviders } from "@/lib/providers/session-registry";
+import type { ConfigProvider } from "@/types/provider";
 
 type NavItem = {
   href: string;
@@ -44,8 +45,6 @@ type NavSection = {
   description: string;
   items: NavItem[];
 };
-
-const headerItem: NavItem = { href: "/", icon: Terminal, label: "Console" };
 
 const navSections: NavSection[] = [
   {
@@ -87,7 +86,32 @@ const navSections: NavSection[] = [
 ];
 
 const allSectionItems: NavItem[] = navSections.flatMap((s) => s.items);
+const consoleItem: NavItem = { href: "/", icon: Terminal, label: "Console" };
 const providerDefs = getAllSessionProviders();
+
+const BUILD_SCOPE_PROVIDER_STYLES: Record<
+  ConfigProvider,
+  { active: string; inactive: string }
+> = {
+  claude: {
+    active:
+      "border-orange-950 bg-orange-900 text-orange-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    inactive:
+      "border-orange-900/65 bg-orange-950/45 text-orange-200 hover:border-orange-800 hover:bg-orange-900/75 hover:text-orange-50",
+  },
+  codex: {
+    active:
+      "border-emerald-950 bg-emerald-900 text-emerald-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    inactive:
+      "border-emerald-900/65 bg-emerald-950/45 text-emerald-200 hover:border-emerald-800 hover:bg-emerald-900/75 hover:text-emerald-50",
+  },
+  gemini: {
+    active:
+      "border-blue-950 bg-blue-900 text-blue-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    inactive:
+      "border-blue-900/65 bg-blue-950/45 text-blue-200 hover:border-blue-800 hover:bg-blue-900/75 hover:text-blue-50",
+  },
+};
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -232,7 +256,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
 
           <nav className="flex-1 space-y-4 p-2">
             <div className="space-y-1.5">
-              <CollapsedItem {...headerItem} active={isItemActive(headerItem)} />
+              <CollapsedItem {...consoleItem} active={isItemActive(consoleItem)} />
             </div>
             <div className="space-y-1.5">
               {visibleCollapsedItems.map((item) => (
@@ -306,20 +330,20 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
             <div className="space-y-4">
               <section className="rounded-2xl border border-primary/25 bg-primary/5 p-1 shadow-sm">
                 <Link
-                  href={headerItem.href}
+                  href={consoleItem.href}
                   className={cn(
                     "flex items-center gap-3 rounded-xl border px-3 py-2 text-[13px] transition-all duration-150",
-                    isItemActive(headerItem)
+                    isItemActive(consoleItem)
                       ? "border-primary/35 bg-nav-active-bg text-foreground shadow-sm"
                       : "border-border/40 bg-background/70 text-foreground/90 hover:border-primary/30 hover:bg-primary/10 hover:text-foreground",
                   )}
                 >
-                  <headerItem.icon
+                  <consoleItem.icon
                     size={15}
                     strokeWidth={1.6}
                     className="text-primary/90"
                   />
-                  <span className="font-medium">{headerItem.label}</span>
+                  <span className="font-medium">{consoleItem.label}</span>
                 </Link>
               </section>
 
@@ -334,7 +358,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
                         <div className="flex flex-wrap items-center justify-end gap-1">
                           {providerDefs.map((provider) => {
                             const isActive = providerScope === provider.id;
-                            const classes = provider.badgeClasses;
+                            const tone = BUILD_SCOPE_PROVIDER_STYLES[provider.id];
                             return (
                               <button
                                 key={provider.id}
@@ -342,9 +366,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
                                 onClick={() => setProviderScope(provider.id)}
                                 className={cn(
                                   "h-6 rounded-full border px-2 text-[11px] font-semibold leading-none tracking-[0.01em] transition-colors",
-                                  isActive
-                                    ? cn(classes.bg, classes.text, classes.border)
-                                    : "border-sidebar-border/70 bg-muted/35 text-muted-foreground hover:border-sidebar-border hover:text-foreground",
+                                  isActive ? tone.active : tone.inactive,
                                 )}
                                 title={`Switch build scope to ${provider.label}`}
                               >
@@ -390,7 +412,13 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
                           ) : (
                             <item.icon size={14} strokeWidth={1.6} />
                           )}
-                          <span className="font-medium">{item.label}</span>
+                          <span
+                            className={cn(
+                              item.href === "/settings" ? "font-semibold" : "font-medium",
+                            )}
+                          >
+                            {item.label}
+                          </span>
                           {!supported && (
                             <span className="ml-auto rounded-full border border-sidebar-border/70 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-text-tertiary">
                               Unavailable

@@ -104,9 +104,6 @@ export function useScanRoutingGraph() {
               queryClient.invalidateQueries({
                 queryKey: ["routing-entrypoints"],
               });
-              toast.success(
-                `Scan complete: ${event.graph.nodes.length} files indexed`,
-              );
             }
             if (event.type === "error") {
               toast.error(event.error || "Scan error");

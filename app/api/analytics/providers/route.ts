@@ -28,7 +28,9 @@ export async function GET(request: Request) {
       SUM(message_count) as messageCount,
       SUM(total_cost) as totalCost,
       SUM(input_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
+      SUM(output_tokens) as outputTokens,
+      SUM(cache_read_tokens) as cacheReadTokens,
+      SUM(cache_write_tokens) as cacheWriteTokens
     FROM sessions
     WHERE created_at >= ? AND created_at < ?
       AND message_count > 0
@@ -43,6 +45,8 @@ export async function GET(request: Request) {
     totalCost: number;
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
   }[];
 
   // 2. Daily by provider (for stacked chart) — dynamic pivot

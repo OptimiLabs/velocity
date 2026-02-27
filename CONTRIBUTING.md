@@ -26,21 +26,20 @@ Thank you for your interest in contributing to Velocity! This guide will help yo
    cd velocity
    ```
 
-3. **Install dependencies**
-
-   ```bash
-   bun install
-   ```
-
-4. **Start the development server**
+3. **Start the development server**
 
    ```bash
    bun dev
    ```
 
-   This starts the Next.js dev server. The app will be available at `http://localhost:3000`.
+   This starts the Next.js dev server. The app will be available at
+   `http://localhost:3000`.
+   `bun dev` auto-runs `bun install` only when dependencies are missing or have
+   changed.
 
-5. **Verify Console works** — After `bun dev` starts, check that you see `WebSocket server + watchers started` in the terminal output. If Console terminals are blank, see the troubleshooting section in the README.
+4. **Verify Console works** — After `bun dev` starts, check that you see
+   `WebSocket server + watchers started` in the terminal output. If Console
+   terminals are blank, see the troubleshooting section in the README.
 
 ## Development Workflow
 
@@ -87,7 +86,8 @@ ci: add type-check step to PR workflow
 Use **`bun`** for all commands. Do not use `npm` or `pnpm`.
 
 ```bash
-bun install        # install deps
+bun dev            # start dev server (auto-installs deps if needed)
+bun install        # force/manual reinstall deps
 bun add <pkg>      # add a dependency
 bun test           # run tests
 ```

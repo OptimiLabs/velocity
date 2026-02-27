@@ -17,6 +17,13 @@ export function estimateTokensFromText(value: string): number {
   return Math.max(1, Math.ceil(normalized.length / CHARS_PER_TOKEN));
 }
 
+export function estimateWordsFromText(value: string): number {
+  if (!value) return 0;
+  const normalized = normalizeText(value);
+  if (!normalized) return 0;
+  return normalized.split(" ").length;
+}
+
 export function estimateTokensFromBytes(bytes: number): number {
   if (!Number.isFinite(bytes) || bytes <= 0) return 0;
   return Math.max(1, Math.ceil(bytes / CHARS_PER_TOKEN));

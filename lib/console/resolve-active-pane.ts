@@ -22,7 +22,13 @@ export function resolveActivePane(opts: {
   contextLeafExists: boolean;
   activeSessionId: string | null;
 }): ResolvedVisibility {
-  const { activePaneId, paneTree, terminalLeaves } = opts;
+  const {
+    activePaneId,
+    paneTree,
+    terminalLeaves,
+    settingsLeafExists,
+    contextLeafExists,
+  } = opts;
 
   // 1. If activePaneId is set, resolve by looking up the node
   if (activePaneId) {
@@ -31,6 +37,7 @@ export function resolveActivePane(opts: {
     if (node?.kind === "leaf") {
       switch (node.content.type) {
         case "settings":
+          if (!settingsLeafExists) break;
           return {
             kind: "settings",
             activePaneId,
@@ -39,6 +46,7 @@ export function resolveActivePane(opts: {
           };
 
         case "context":
+          if (!contextLeafExists) break;
           return {
             kind: "context",
             activePaneId,

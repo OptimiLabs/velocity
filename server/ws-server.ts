@@ -27,11 +27,12 @@ type WsIncomingMessage =
   | { type: "group:delete"; groupId: string }
   | { type: "session:persist"; consoleSessionId: string; cwd: string; label?: string; createdAt?: number; firstPrompt?: string; agentName?: string }
   | { type: "session:set-group"; consoleSessionId: string; groupId?: string | null }
-  | { type: "pty:create"; terminalId: string; cwd?: string; cols?: number; rows?: number; env?: Record<string, string>; command?: string; args?: string[] }
+  | { type: "pty:create"; terminalId: string; cwd?: string; cols?: number; rows?: number; env?: Record<string, string>; command?: string; args?: string[]; logging?: boolean }
   | { type: "pty:input"; terminalId: string; data: string }
   | { type: "pty:resize"; terminalId: string; cols: number; rows: number }
   | { type: "pty:close"; terminalId: string }
   | { type: "pty:reclaim"; terminalIds: string[] }
+  | { type: "pty:sync-active"; terminalIds: string[] }
   | { type: "terminal:exec"; command: string }
   | { type: "init-project"; consoleSessionId: string }
   | { type: "doctor"; consoleSessionId: string }
@@ -246,7 +247,7 @@ export class WebSocketServer {
         this.ptyHandler.handleCreate(ws, msg);
         break;
       case "pty:input":
-        this.ptyHandler.handleInput(msg);
+        this.ptyHandler.handleInput(ws, msg);
         break;
       case "pty:resize":
         this.ptyHandler.handleResize(msg);
@@ -256,6 +257,11 @@ export class WebSocketServer {
         break;
       case "pty:reclaim":
         this.ptyHandler.handleReclaim(ws, msg.terminalIds || []);
+        break;
+      case "pty:sync-active":
+        this.ptyManager.syncActiveTerminals(
+          Array.isArray(msg.terminalIds) ? msg.terminalIds : [],
+        );
         break;
 
       // --- Semantic history: open file in editor ---

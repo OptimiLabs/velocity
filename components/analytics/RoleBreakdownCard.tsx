@@ -72,6 +72,7 @@ export function RoleBreakdownCard({
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
     cacheReadTokens: r.cacheReadTokens,
+    cacheWriteTokens: r.cacheWriteTokens || 0,
   }));
 
   const compareMap = useMemo(() => {
@@ -140,7 +141,10 @@ export function RoleBreakdownCard({
                     if (!active || !payload?.length) return null;
                     const d = payload[0].payload;
                     const totalTokens =
-                      d.inputTokens + d.outputTokens + d.cacheReadTokens;
+                      d.inputTokens +
+                      d.outputTokens +
+                      d.cacheReadTokens +
+                      (d.cacheWriteTokens || 0);
                     const cachePct =
                       totalTokens > 0
                         ? ((d.cacheReadTokens / totalTokens) * 100).toFixed(1)
@@ -178,9 +182,11 @@ export function RoleBreakdownCard({
                           <span className="text-right tabular-nums">
                             {formatTokens(d.outputTokens)}
                           </span>
-                          <span>Cache</span>
+                          <span>Cache R/W</span>
                           <span className="text-right tabular-nums">
-                            {formatTokens(d.cacheReadTokens)} ({cachePct}%)
+                            {formatTokens(d.cacheReadTokens)} /{" "}
+                            {formatTokens(d.cacheWriteTokens || 0)} ({cachePct}
+                            %)
                           </span>
                         </div>
                       </div>

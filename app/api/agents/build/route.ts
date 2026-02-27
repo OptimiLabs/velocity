@@ -267,6 +267,7 @@ export async function POST(request: Request) {
         : rawLegacyEffort;
     const effort = rawAgentEffort || undefined;
     const selectedTools = normalizeTools(body.tools);
+    const disallowedTools = normalizeTools(body.disallowedTools);
     const provider =
       typeof body.provider === "string" ? body.provider.trim() : undefined;
     const temperature = parseNumberField(body.temperature, { min: 0, max: 2 });
@@ -332,7 +333,9 @@ export async function POST(request: Request) {
 
     const toolsConstraint = selectedTools.length
       ? `\nThe user has specifically selected these tools: ${JSON.stringify(selectedTools)}. Use exactly these tools in your output.`
-      : "\nChoose the most appropriate tools for this agent's purpose.";
+      : disallowedTools.length
+        ? `\nThe user has blocked these tools: ${JSON.stringify(disallowedTools)}. Do NOT include any blocked tool in your output.`
+        : "\nChoose the most appropriate tools for this agent's purpose.";
 
     const existingBlock =
       existingAgents?.length > 0
@@ -405,6 +408,16 @@ export async function POST(request: Request) {
       name: uniqueName,
       description: normalizedDescription,
       prompt: normalizedPrompt,
+      ...(disallowedTools.length > 0
+        ? { disallowedTools }
+        : {}),
+      ...(Array.isArray(normalized.config.tools) && disallowedTools.length > 0
+        ? {
+            tools: normalized.config.tools.filter(
+              (tool) => !disallowedTools.includes(tool),
+            ),
+          }
+        : {}),
     };
     const metadata = {
       status: normalized.status,
@@ -430,6 +443,9 @@ export async function POST(request: Request) {
         model: config.model as string | undefined,
         effort: config.effort as "low" | "medium" | "high" | undefined,
         tools: Array.isArray(config.tools) ? (config.tools as string[]) : undefined,
+        disallowedTools: Array.isArray(config.disallowedTools)
+          ? (config.disallowedTools as string[])
+          : undefined,
         color: config.color as string | undefined,
       },
       targetProvider,

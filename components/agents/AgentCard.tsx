@@ -16,6 +16,7 @@ import {
   Activity,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AgentIcon } from "@/lib/agents/categories";
 import { formatCost } from "@/lib/cost/calculator";
 import { formatDistanceToNow } from "date-fns";
@@ -35,6 +36,7 @@ export function AgentCard({
   onDelete,
   onDuplicate,
 }: AgentCardProps) {
+  const router = useRouter();
   const modelInfo = getAgentModelDisplay(agent.model, agent.provider);
   const launchParams = new URLSearchParams({
     agent: agent.name,
@@ -153,11 +155,14 @@ export function AgentCard({
             )}
           </div>
           <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={(e) => e.stopPropagation()}>
-            <Link href={launchHref}>
-              <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-success">
-                <Play size={10} />
-              </Button>
-            </Link>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0 text-success"
+              onClick={() => router.push(launchHref)}
+            >
+              <Play size={10} />
+            </Button>
             {onDuplicate && (
               <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => onDuplicate(agent)}>
                 <Copy size={10} />

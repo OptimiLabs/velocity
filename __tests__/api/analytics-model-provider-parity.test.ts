@@ -50,6 +50,13 @@ beforeAll(() => {
         '{"gemini-3-pro-preview":{"inputTokens":3000,"outputTokens":1500,"cacheReadTokens":250,"cost":0.06,"messageCount":2}}'
       ),
       (
+        'codex-legacy', 'p1', NULL, NULL, 5, 0,
+        100, 50, 25, 0.01,
+        '2026-02-20T12:30:00Z', '2026-02-20T12:35:00Z', '/tmp/codex-legacy.jsonl',
+        'codex',
+        '{"gpt-5.2":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":25,"cache_write_tokens":5,"cost":0.01,"messageCount":1}}'
+      ),
+      (
         'broken-model-usage', 'p1', NULL, NULL, 1, 0,
         50, 25, 0, 0.001,
         '2026-02-20T12:40:00Z', '2026-02-20T12:45:00Z', '/tmp/broken.jsonl',
@@ -119,10 +126,24 @@ describe("analytics model/provider parity routes", () => {
     );
 
     expect(codexRow).toBeDefined();
-    expect(codexRow.messageCount).toBe(3);
+    expect(codexRow.messageCount).toBe(4);
     expect(codexRow.reasoningTokens).toBe(120);
     expect(geminiRow).toBeDefined();
     expect(geminiRow.messageCount).toBe(2);
+  });
+
+  it("accepts snake_case cache token fields in model_usage", async () => {
+    const { GET } = await import("@/app/api/analytics/models/route");
+    const req = new Request(
+      "http://localhost/api/analytics/models?from=2026-02-20&to=2026-02-20&provider=codex",
+    );
+    const res = await GET(req);
+    const data = await res.json();
+
+    const codexRow = data.models.find((m: { model: string }) => m.model === "gpt-5.2");
+    expect(codexRow).toBeDefined();
+    expect(codexRow.cacheReadTokens).toBe(25);
+    expect(codexRow.cacheWriteTokens).toBe(5);
   });
 
   it("filters model breakdown by provider", async () => {

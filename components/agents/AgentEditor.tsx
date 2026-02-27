@@ -17,7 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Wrench, Server, Plug, Ban, ChevronRight, Info } from "lucide-react";
+import { ChevronRight, Info } from "lucide-react";
 import {
   AGENT_ICON_MAP,
 } from "@/lib/agents/categories";
@@ -27,6 +27,7 @@ import { ArtifactConvertDialog } from "@/components/providers/ArtifactConvertDia
 import { DirectoryPicker } from "@/components/console/DirectoryPicker";
 import type { Agent } from "@/types/agent";
 import type { ConfigProvider } from "@/types/provider";
+import { ToolMultiSelect } from "@/components/agents/ToolMultiSelect";
 import {
   getAgentModelDisplay,
   getAgentModelOptionLabel,
@@ -141,9 +142,6 @@ function AgentEditorForm({
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [prompt, setPrompt] = useState(agent?.prompt || "");
-  const [allowedTools, setAllowedTools] = useState<Set<string>>(
-    new Set(agent?.tools || []),
-  );
   const [disallowedTools, setDisallowedTools] = useState<Set<string>>(
     new Set(agent?.disallowedTools || []),
   );
@@ -202,24 +200,6 @@ function AgentEditorForm({
     };
   }, [saveScope, projects.length]);
 
-  const toggleBuiltinTool = (toolName: string) => {
-    setDisallowedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(toolName)) next.delete(toolName);
-      else next.add(toolName);
-      return next;
-    });
-  };
-
-  const toggleOptInTool = (toolName: string) => {
-    setAllowedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(toolName)) next.delete(toolName);
-      else next.add(toolName);
-      return next;
-    });
-  };
-
   const handleSave = () => {
     if (saveScope === "project" && !saveProjectPath) {
       toast.error("Select a project before saving a project-scoped agent");
@@ -233,9 +213,9 @@ function AgentEditorForm({
       model: trimmedModel || undefined,
       effort,
       prompt,
-      tools: isClaudeProvider ? [...allowedTools] : agent?.tools,
+      tools: agent?.tools,
       disallowedTools: isClaudeProvider
-        ? [...disallowedTools]
+        ? sanitizedDisallowedTools
         : agent?.disallowedTools,
       color: color || undefined,
       icon: icon || undefined,
@@ -250,16 +230,19 @@ function AgentEditorForm({
     onClose();
   };
 
-  const builtinTools = availableTools.filter((t) => t.type === "builtin");
-  const mcpTools = availableTools.filter((t) => t.type === "mcp");
-  const pluginTools = availableTools.filter((t) => t.type === "plugin");
-  const optInTools = useMemo(() => {
-    const byName = new Map<string, ToolInfo>();
-    for (const tool of [...mcpTools, ...pluginTools]) {
-      if (!byName.has(tool.name)) byName.set(tool.name, tool);
-    }
-    return Array.from(byName.values());
-  }, [mcpTools, pluginTools]);
+  const selectableTools = availableTools.filter(
+    (tool) =>
+      tool.type === "builtin" || tool.type === "mcp" || tool.type === "skill",
+  );
+  const pluginToolNames = useMemo(
+    () =>
+      new Set(
+        availableTools
+          .filter((tool) => tool.type === "plugin")
+          .map((tool) => tool.name),
+      ),
+    [availableTools],
+  );
   const providerModelOptions = useMemo(() => {
     const base = PROVIDER_MODELS[effectiveProvider] ?? [];
     const options: Array<{ value: string; label: string }> = [
@@ -282,7 +265,10 @@ function AgentEditorForm({
     () => getAgentModelDisplay(model, effectiveProvider),
     [model, effectiveProvider],
   );
-  const hasExtraTools = optInTools.length > 0;
+  const sanitizedDisallowedTools = useMemo(
+    () => [...disallowedTools].filter((tool) => !pluginToolNames.has(tool)),
+    [disallowedTools, pluginToolNames],
+  );
 
   return (
     <>
@@ -549,84 +535,18 @@ function AgentEditorForm({
               <section className="space-y-2.5">
                 <SectionLabel>Tools</SectionLabel>
 
-                {builtinTools.length > 0 && (
-                  <div>
-                    <div className="flex items-baseline gap-2 mb-1.5">
-                      <FieldLabel className="mb-0">Built-in</FieldLabel>
-                      <span className="text-[10px] text-muted-foreground/50">
-                        all enabled by default · click to deny
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {builtinTools.map((tool) => {
-                        const isDenied = disallowedTools.has(tool.name);
-                        return (
-                          <button
-                            key={tool.name}
-                            onClick={() => toggleBuiltinTool(tool.name)}
-                            title={
-                              isDenied
-                                ? `${tool.name} — denied (click to allow)`
-                                : `${tool.name} — allowed (click to deny)`
-                            }
-                            className={cn(
-                              "flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono border transition-colors",
-                              isDenied
-                                ? "border-destructive/40 bg-destructive/10 text-destructive line-through"
-                                : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground",
-                            )}
-                          >
-                            {isDenied ? (
-                              <Ban size={9} className="text-destructive" />
-                            ) : (
-                              <Wrench size={9} />
-                            )}
-                            {tool.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {hasExtraTools && (
-                  <div>
-                    <div className="flex items-baseline gap-2 mb-1.5">
-                      <FieldLabel className="mb-0">MCP &amp; Plugins</FieldLabel>
-                      <span className="text-[10px] text-muted-foreground/50">
-                        click to allow
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1 max-h-[100px] overflow-y-auto">
-                      {optInTools.map((tool) => {
-                        const isActive = allowedTools.has(tool.name);
-                        const isMcp = tool.type === "mcp";
-                        return (
-                          <button
-                            key={`${tool.type}:${tool.name}`}
-                            onClick={() => toggleOptInTool(tool.name)}
-                            title={tool.description}
-                            className={cn(
-                              "flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono border transition-colors",
-                              isActive
-                                ? isMcp
-                                  ? "border-chart-1/50 bg-chart-1/10 text-chart-1"
-                                  : "border-chart-4/50 bg-chart-4/10 text-chart-4"
-                                : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground",
-                            )}
-                          >
-                            {isMcp ? (
-                              <Server size={9} className="text-chart-1" />
-                            ) : (
-                              <Plug size={9} className="text-chart-4" />
-                            )}
-                            {tool.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                <div>
+                  <FieldLabel className="mb-1">Blocked Tools</FieldLabel>
+                  <ToolMultiSelect
+                    tools={selectableTools}
+                    selected={sanitizedDisallowedTools}
+                    onChange={(next) => setDisallowedTools(new Set(next))}
+                    emptyLabel="No blocked tools"
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                    Multi-select tools this agent should not use.
+                  </p>
+                </div>
 
                 {availableTools.length === 0 && (
                   <div className="text-xs text-text-tertiary">
@@ -706,7 +626,10 @@ function AgentEditorForm({
               prompt: trimmedPrompt,
               model: trimmedModel || undefined,
               effort,
-              tools: isClaudeProvider ? [...allowedTools] : agent?.tools,
+              tools: agent?.tools,
+              disallowedTools: isClaudeProvider
+                ? sanitizedDisallowedTools
+                : agent?.disallowedTools,
               color: color || undefined,
               scope: saveScope,
               projectPath: saveScope === "project" ? saveProjectPath : undefined,

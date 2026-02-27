@@ -58,6 +58,25 @@ describe("gemini/session-discovery", () => {
       expect(sessions[0].filePath).toBe(join(chatsDir, "session-hello.json"));
       expect(sessions[0].createdAt).toBeDefined();
       expect(sessions[0].modifiedAt).toBeDefined();
+      expect(sessions[0].projectPath).toBeNull();
+    });
+
+    it("reads project path from .project_root marker when available", async () => {
+      const hash = "abc123";
+      const hashDir = join(dir, hash);
+      const chatsDir = join(hashDir, "chats");
+      mkdirSync(chatsDir, { recursive: true });
+      writeFileSync(join(hashDir, ".project_root"), "/Users/test/project-a");
+      writeFileSync(
+        join(chatsDir, "session-hello.json"),
+        JSON.stringify({ messages: [] }),
+      );
+
+      const { discoverGeminiSessionsFrom } =
+        await import("@/lib/gemini/session-discovery");
+      const sessions = discoverGeminiSessionsFrom(dir);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].projectPath).toBe("/Users/test/project-a");
     });
 
     it("handles multiple project hashes", async () => {

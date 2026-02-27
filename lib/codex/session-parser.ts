@@ -1,4 +1,7 @@
+import path from "path";
 import { calculateCostDetailed } from "@/lib/cost/calculator";
+import { CODEX_VELOCITY_AGENTS_DIR } from "@/lib/codex/paths";
+import { getCodexInstructionDirs } from "@/lib/codex/skills";
 import {
   getCodexModel,
   getCodexTokenTotals,
@@ -112,6 +115,36 @@ function createEmptyStats(): SessionStats {
   };
 }
 
+function getSkillPathCandidates(skillName: string, projectPath: string | null): string[] {
+  const dirs = projectPath
+    ? [...getCodexInstructionDirs(projectPath), ...getCodexInstructionDirs()]
+    : getCodexInstructionDirs();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    for (const candidate of [
+      path.join(dir, skillName, "SKILL.md"),
+      path.join(dir, `${skillName}.md`),
+    ]) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      out.push(candidate);
+    }
+  }
+  return out;
+}
+
+function getAgentPathCandidates(
+  agentType: string,
+  projectPath: string | null,
+): string[] {
+  const out = [path.join(CODEX_VELOCITY_AGENTS_DIR, `${agentType}.md`)];
+  if (projectPath) {
+    out.unshift(path.join(projectPath, ".codex", "agents", `${agentType}.md`));
+  }
+  return out;
+}
+
 function incrementPathCount(map: Map<string, number>, path: string) {
   if (!path.trim()) return;
   map.set(path, (map.get(path) || 0) + 1);
@@ -178,6 +211,18 @@ function normalizeEffortMode(value: unknown): string | null {
   return normalized;
 }
 
+function normalizeTagValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "");
+  if (!normalized) return null;
+  if (normalized.length > 40) return normalized.slice(0, 40);
+  return normalized;
+}
+
 function extractCodexEffortMode(
   payload: Record<string, unknown> | undefined,
 ): string | null {
@@ -185,6 +230,8 @@ function extractCodexEffortMode(
 
   const direct =
     normalizeEffortMode(payload.effort) ??
+    normalizeEffortMode(payload.effort_mode) ??
+    normalizeEffortMode(payload.model_reasoning_effort) ??
     normalizeEffortMode(payload.reasoning_effort) ??
     normalizeEffortMode(payload.reasoningEffort);
   if (direct) return direct;
@@ -194,6 +241,8 @@ function extractCodexEffortMode(
   return (
     normalizeEffortMode(settings?.reasoning_effort) ??
     normalizeEffortMode(settings?.reasoningEffort) ??
+    normalizeEffortMode(settings?.model_reasoning_effort) ??
+    normalizeEffortMode(settings?.modelReasoningEffort) ??
     normalizeEffortMode(settings?.effort)
   );
 }
@@ -250,6 +299,11 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
   let lastAgentMessage: string | null = null;
   let isSubagent = false;
   let detectedEffortMode: string | null = null;
+  let detectedProjectPath: string | null = null;
+  let detectedGitBranch: string | null = null;
+  let detectedApprovalPolicy: string | null = null;
+  let detectedSandboxMode: string | null = null;
+  let detectedCollaborationMode: string | null = null;
 
   // Latency/session duration tracking
   const turnLatencies: number[] = [];
@@ -275,6 +329,7 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
     input: unknown,
     status?: string,
   ) {
+    const normalizedName = name.toLowerCase();
     const entry = ensureTool(name);
     entry.count++;
     stats.toolCallCount++;
@@ -287,7 +342,7 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       entry.errorCount++;
     }
 
-    if (name.startsWith("mcp__")) {
+    if (normalizedName.startsWith("mcp__")) {
       const segments = name.split("__");
       const serverName = segments[1] || name;
       mcpTools[serverName] = (mcpTools[serverName] || 0) + 1;
@@ -295,7 +350,7 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
 
     const record = getRecord(input);
     if (!record) {
-      if (name === "apply_patch" && typeof input === "string") {
+      if (normalizedName === "apply_patch" && typeof input === "string") {
         for (const patchPath of extractApplyPatchPaths(input)) {
           incrementPathCount(filesModifiedMap, patchPath);
         }
@@ -303,8 +358,8 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       return;
     }
 
-    if (name === "Skill") {
-      const skillName = getString(record.skill);
+    if (normalizedName === "skill") {
+      const skillName = getString(record.skill) ?? getString(record.name);
       if (skillName) {
         const existing = skills.find((s) => s.name === skillName);
         if (existing) existing.count++;
@@ -312,8 +367,12 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       }
     }
 
-    if (name === "Task") {
-      const subagentType = getString(record.subagent_type);
+    if (normalizedName === "task" || normalizedName === "spawn_agent") {
+      const subagentType =
+        getString(record.subagent_type) ??
+        getString(record.agent_type) ??
+        getString(record.agentType) ??
+        getString(record.name);
       if (subagentType) {
         agents.push({
           type: subagentType,
@@ -322,7 +381,7 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       }
     }
 
-    if (name === "apply_patch") {
+    if (normalizedName === "apply_patch") {
       const patchText =
         getString(record.patch) ??
         getString(record.input) ??
@@ -333,25 +392,39 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       }
     }
 
-    if ((name === "read_file" || name === "Read") && record.file_path) {
-      incrementPathCount(filesReadMap, String(record.file_path));
+    if (normalizedName === "read_file" || normalizedName === "read") {
+      const readPath =
+        getString(record.file_path) ??
+        getString(record.filePath) ??
+        getString(record.path);
+      if (readPath) incrementPathCount(filesReadMap, readPath);
     }
 
     if (
-      (name === "write_file" ||
-        name === "edit_file" ||
-        name === "Write" ||
-        name === "Edit") &&
-      record.file_path
+      (normalizedName === "write_file" ||
+        normalizedName === "edit_file" ||
+        normalizedName === "write" ||
+        normalizedName === "edit")
     ) {
-      incrementPathCount(filesModifiedMap, String(record.file_path));
+      const writePath =
+        getString(record.file_path) ??
+        getString(record.filePath) ??
+        getString(record.path) ??
+        getString(record.target);
+      if (writePath) incrementPathCount(filesModifiedMap, writePath);
     }
 
     if (
-      (name === "search_files" || name === "Grep" || name === "Glob") &&
-      record.path
+      (normalizedName === "search_files" ||
+        normalizedName === "grep" ||
+        normalizedName === "glob")
     ) {
-      searchedPaths.add(String(record.path));
+      const searchPath =
+        getString(record.path) ??
+        getString(record.dir_path) ??
+        getString(record.directory) ??
+        getString(record.cwd);
+      if (searchPath) searchedPaths.add(searchPath);
     }
   }
 
@@ -375,6 +448,17 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       const payload = getRecord((msg as { payload?: unknown }).payload);
       const source = getRecord(payload?.source);
       if (source?.subagent) isSubagent = true;
+      const cwd = getString(payload?.cwd);
+      if (cwd) detectedProjectPath = cwd;
+      const git = getRecord(payload?.git);
+      const branch =
+        getString(git?.branch) ??
+        getString(source?.git_branch) ??
+        getString(source?.gitBranch) ??
+        (getRecord(source?.git) ? getString(getRecord(source?.git)?.branch) : undefined) ??
+        getString(payload?.git_branch) ??
+        getString(payload?.gitBranch);
+      if (branch) detectedGitBranch = branch;
     }
 
     const payload = getRecord((msg as { payload?: unknown }).payload);
@@ -385,6 +469,32 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
       if (effortMode) {
         detectedEffortMode = effortMode;
       }
+      const approvalPolicy =
+        normalizeTagValue(payload?.approval_policy) ??
+        normalizeTagValue(payload?.approvalPolicy);
+      if (approvalPolicy) detectedApprovalPolicy = approvalPolicy;
+      const sandboxPolicy = getRecord(payload?.sandbox_policy);
+      const sandboxMode =
+        normalizeTagValue(sandboxPolicy?.type) ??
+        normalizeTagValue(payload?.sandbox_mode) ??
+        normalizeTagValue(payload?.sandboxMode);
+      if (sandboxMode) detectedSandboxMode = sandboxMode;
+      const collaborationMode = getRecord(payload?.collaboration_mode);
+      const collaborationModeName =
+        normalizeTagValue(collaborationMode?.mode) ??
+        normalizeTagValue(payload?.collaboration_mode_name) ??
+        normalizeTagValue(payload?.collaborationMode);
+      if (collaborationModeName) {
+        detectedCollaborationMode = collaborationModeName;
+      }
+      const cwd = getString(payload?.cwd);
+      if (cwd) detectedProjectPath = cwd;
+      const git = getRecord(payload?.git);
+      const branch =
+        getString(git?.branch) ??
+        getString(payload?.git_branch) ??
+        getString(payload?.gitBranch);
+      if (branch) detectedGitBranch = branch;
     }
 
     if (msg.type === "event_msg" && payloadType === "user_message") {
@@ -419,6 +529,8 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
         lastUserTimestamp = null;
       }
     } else if (msg.type === "event_msg" && payloadType === "agent_reasoning") {
+      stats.thinkingBlocks++;
+    } else if (msg.type === "response_item" && payloadType === "reasoning") {
       stats.thinkingBlocks++;
     } else if (msg.type === "event_msg" && payloadType === "task_complete") {
       const finalMessage = getString(payload?.last_agent_message);
@@ -570,18 +682,41 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
     }),
   );
 
-  const detectedInstructionPaths: string[] = [];
+  const detectedInstructionPathSet = new Set<string>();
   for (const fr of filesRead) {
     if (fr.category === "knowledge" || fr.category === "instruction") {
-      detectedInstructionPaths.push(fr.path);
+      detectedInstructionPathSet.add(fr.path);
     }
   }
+  for (const skill of skills) {
+    for (const candidate of getSkillPathCandidates(
+      skill.name,
+      detectedProjectPath,
+    )) {
+      detectedInstructionPathSet.add(candidate);
+    }
+  }
+  for (const agent of agents) {
+    for (const candidate of getAgentPathCandidates(
+      agent.type,
+      detectedProjectPath,
+    )) {
+      detectedInstructionPathSet.add(candidate);
+    }
+  }
+  const detectedInstructionPaths = [...detectedInstructionPathSet];
 
   const coreTools: Record<string, number> = {};
   const otherTools: Record<string, number> = {};
   for (const [name, entry] of Object.entries(toolUsage)) {
-    if (name === "Skill" || name === "Task" || name.startsWith("mcp__"))
+    const normalizedName = name.toLowerCase();
+    if (
+      normalizedName === "skill" ||
+      normalizedName === "task" ||
+      name.startsWith("mcp__")
+    ) {
       continue;
+    }
     if (isCoreToolForProvider(name, "codex")) coreTools[name] = entry.count;
     else otherTools[name] = entry.count;
   }
@@ -623,6 +758,11 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
     for (const t of spawnedTypes) tags.push(`spawns:${t}`);
   }
   for (const s of skills) tags.push(`skill:${s.name}`);
+  if (detectedApprovalPolicy) tags.push(`approval:${detectedApprovalPolicy}`);
+  if (detectedSandboxMode) tags.push(`sandbox:${detectedSandboxMode}`);
+  if (detectedCollaborationMode) {
+    tags.push(`mode:${detectedCollaborationMode}`);
+  }
 
   const latency = summarizeLatencies(turnLatencies);
 
@@ -659,6 +799,7 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
   stats.sessionRole = isSubagent ? "subagent" : "standalone";
   stats.tags = tags;
   stats.autoSummary = lastAgentMessage || firstUserMessage;
+  stats.firstPrompt = firstUserMessage;
   stats.avgLatencyMs = latency.avgLatencyMs;
   stats.p50LatencyMs = latency.p50LatencyMs;
   stats.p95LatencyMs = latency.p95LatencyMs;
@@ -667,6 +808,8 @@ export async function parseCodexSession(filePath: string): Promise<SessionStats>
   stats.sessionDurationMs = Math.max(0, sessionDurationMs);
   stats.detectedProvider = "codex";
   stats.effortMode = detectedEffortMode;
+  stats.projectPath = detectedProjectPath;
+  stats.gitBranch = detectedGitBranch;
 
   return stats;
 }

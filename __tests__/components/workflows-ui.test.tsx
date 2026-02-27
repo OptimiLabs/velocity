@@ -1,8 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { Workflow } from "@/types/workflow";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { WorkflowList } from "@/components/workflows/WorkflowList";
 import { WorkflowInventoryItem } from "@/components/agents/workspace/WorkflowInventoryItem";
-import type { Workflow } from "@/types/workflow";
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
   return {
@@ -108,4 +117,3 @@ describe("Workflow UI interactions", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 });
-

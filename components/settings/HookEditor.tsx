@@ -55,6 +55,12 @@ import {
   describeEditingHook,
 } from "@/lib/hooks/hook-editor-utils";
 import type { MarketplaceItem } from "@/types/marketplace";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 export interface HookConfig {
   type: "command" | "prompt" | "agent";
@@ -415,6 +421,12 @@ export function HookEditor({
     if (!text) return;
     setAiGenerating(true);
     setAiError(null);
+    const jobId = startProcessingJob({
+      title: "Generate hook rule",
+      subtitle: summarizeForJob(text),
+      source: "hooks",
+      provider: profile.provider,
+    });
     try {
       const res = await fetch("/api/hooks/generate", {
         method: "POST",
@@ -511,10 +523,21 @@ export function HookEditor({
       }
 
       setAiDescription("");
+      completeProcessingJob(jobId, {
+        subtitle: summarizeForJob(
+          data.event
+            ? `${data.event} (${data.hook?.type || "command"})`
+            : "Hook draft ready",
+        ),
+      });
     } catch (err) {
+      failProcessingJob(jobId, err, {
+        subtitle: summarizeForJob(text),
+      });
       setAiError(err instanceof Error ? err.message : "Generation failed");
+    } finally {
+      setAiGenerating(false);
     }
-    setAiGenerating(false);
   };
 
   // ── Cost warning logic ──────────────────────────────────────

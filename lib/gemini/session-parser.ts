@@ -1,15 +1,19 @@
 import fs from "fs";
+import path from "path";
 import { calculateCostDetailed } from "@/lib/cost/calculator";
 import { categorizeFilePath } from "@/lib/parser/session-utils";
 import { isCoreToolForProvider } from "@/lib/tools/provider-tools";
 import type { SessionStats } from "@/lib/parser/session-aggregator";
 import type {
+  AgentEntry,
+  SkillEntry,
   ToolUsageEntry,
   ModelUsageEntry,
   EnrichedToolData,
   FileReadEntry,
   FileWriteEntry,
 } from "@/types/session";
+import { getGeminiAgentDirs, getGeminiSkillDirs } from "@/lib/gemini/paths";
 import {
   maybeRecordTurnLatency,
   summarizeLatencies,
@@ -26,6 +30,9 @@ export interface GeminiToolCall {
   name?: string;
   args?: Record<string, unknown>;
   status?: string;
+  result?: unknown;
+  response?: unknown;
+  error?: unknown;
   [key: string]: unknown;
 }
 
@@ -37,6 +44,7 @@ export interface GeminiMessage {
   model?: string;
   tokens?: Record<string, unknown>;
   toolCalls?: GeminiToolCall[];
+  thoughts?: unknown[];
   content?: unknown;
   timestamp?: string;
   [key: string]: unknown;
@@ -45,6 +53,13 @@ export interface GeminiMessage {
 interface GeminiSessionFile {
   startTime?: string;
   lastUpdated?: string;
+  summary?: unknown;
+  git_branch?: string;
+  gitBranch?: string;
+  branch?: string;
+  cwd?: string;
+  project_path?: string;
+  projectPath?: string;
   messages?: GeminiMessage[];
   [key: string]: unknown;
 }
@@ -91,6 +106,188 @@ function emptyStats(): SessionStats {
   };
 }
 
+function resolveGeminiProjectPath(filePath: string): string | null {
+  const sessionDir = path.dirname(filePath);
+  const projectDir = path.dirname(sessionDir);
+  const markerPath = path.join(projectDir, ".project_root");
+  try {
+    const raw = fs.readFileSync(markerPath, "utf-8").trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function getSkillPathCandidates(
+  skillName: string,
+  projectPath: string | null,
+): string[] {
+  return getGeminiSkillDirs(projectPath ?? undefined).map((dir) =>
+    path.join(dir, `${skillName}.md`),
+  );
+}
+
+function getAgentPathCandidates(
+  agentType: string,
+  projectPath: string | null,
+): string[] {
+  return getGeminiAgentDirs(projectPath ?? undefined).map((dir) =>
+    path.join(dir, `${agentType}.md`),
+  );
+}
+
+const GEMINI_EFFORT_KEYS = [
+  "effort",
+  "effort_mode",
+  "reasoning_effort",
+  "reasoningEffort",
+  "model_reasoning_effort",
+  "modelReasoningEffort",
+  "effortLevel",
+] as const;
+
+function getStringValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeEffortMode(value: unknown): string | null {
+  const normalized = getStringValue(value)?.toLowerCase();
+  if (!normalized) return null;
+  if (!/^[a-z0-9_-]{2,24}$/.test(normalized)) return null;
+  return normalized;
+}
+
+function extractEffortMode(source: unknown): string | null {
+  if (!isRecord(source)) return null;
+  const queue: Record<string, unknown>[] = [source];
+  const seen = new Set<Record<string, unknown>>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    for (const key of GEMINI_EFFORT_KEYS) {
+      const mode = normalizeEffortMode(current[key]);
+      if (mode) return mode;
+    }
+
+    const nested = [
+      current.metadata,
+      current.context,
+      current.settings,
+      current.config,
+      current.payload,
+      current.source,
+      current.env,
+      current.environment,
+      current.collaboration_mode,
+      current.collaborationMode,
+      current.data,
+      current.message,
+    ];
+    for (const value of nested) {
+      if (isRecord(value)) queue.push(value);
+    }
+  }
+  return null;
+}
+
+function extractGitBranch(source: unknown): string | null {
+  if (!isRecord(source)) return null;
+  return (
+    getStringValue(source.git_branch) ??
+    getStringValue(source.gitBranch) ??
+    (isRecord(source.git) ? getStringValue(source.git.branch) : null) ??
+    (isRecord(source.metadata) ? extractGitBranch(source.metadata) : null)
+  );
+}
+
+function extractProjectPathHint(source: unknown): string | null {
+  if (!isRecord(source)) return null;
+  return (
+    getStringValue(source.project_path) ??
+    getStringValue(source.projectPath) ??
+    getStringValue(source.cwd) ??
+    getStringValue(source.working_directory) ??
+    getStringValue(source.workspace) ??
+    (isRecord(source.metadata) ? extractProjectPathHint(source.metadata) : null)
+  );
+}
+
+function readSessionSummary(session: GeminiSessionFile | null): string | null {
+  if (!session) return null;
+  const summary = session.summary;
+
+  if (typeof summary === "string") {
+    const normalized = summary.trim();
+    return normalized ? normalizeGeminiInvalidCommandHelp(normalized) : null;
+  }
+
+  if (Array.isArray(summary)) {
+    const chunks = summary
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (isRecord(item)) {
+          return (
+            getStringValue(item.text) ??
+            getStringValue(item.summary) ??
+            getStringValue(item.content) ??
+            ""
+          );
+        }
+        return "";
+      })
+      .filter(Boolean);
+    if (chunks.length > 0) {
+      return normalizeGeminiInvalidCommandHelp(chunks.join("\n").trim());
+    }
+  }
+
+  if (isRecord(summary)) {
+    const normalized =
+      getStringValue(summary.text) ??
+      getStringValue(summary.summary) ??
+      getStringValue(summary.content) ??
+      getStringValue(summary.message);
+    if (normalized) return normalizeGeminiInvalidCommandHelp(normalized);
+  }
+
+  return null;
+}
+
+function hasToolResultError(result: unknown): boolean {
+  if (result === null || typeof result === "undefined") return false;
+
+  if (typeof result === "string") {
+    const normalized = result.toLowerCase();
+    if (/process exited with code\s+0/i.test(normalized)) return false;
+    return /\b(error|failed|failure|exception|timeout|denied)\b/i.test(
+      normalized,
+    );
+  }
+
+  if (isRecord(result)) {
+    const status = getStringValue(result.status)?.toLowerCase();
+    if (
+      status &&
+      ["error", "failed", "failure", "timeout", "cancelled"].includes(status)
+    ) {
+      return true;
+    }
+    if (result.error) return true;
+    if (result.is_error === true) return true;
+    if (result.ok === false) return true;
+    if (result.success === false) return true;
+
+    if ("response" in result && hasToolResultError(result.response)) return true;
+    if ("result" in result && hasToolResultError(result.result)) return true;
+  }
+
+  return false;
+}
+
 export function parseGeminiSession(filePath: string): SessionStats {
   const stats = emptyStats();
 
@@ -111,22 +308,29 @@ export function parseGeminiSession(filePath: string): SessionStats {
   const messages = extractMessages(parsedSession);
   if (messages.length === 0) return stats;
 
-  const toolUsage: Record<string, ToolUsageEntry> = {};
-  const modelUsage: Record<string, ModelUsageEntry> = {};
-  const filesReadMap = new Map<string, number>();
-  const filesModifiedMap = new Map<string, number>();
-  const searchedPaths = new Set<string>();
-  const detectedInstructionPaths: string[] = [];
-
   const sessionObject = isRecord(parsedSession)
     ? (parsedSession as GeminiSessionFile)
     : null;
+  const projectPath =
+    resolveGeminiProjectPath(filePath) ?? extractProjectPathHint(sessionObject);
+  const toolUsage: Record<string, ToolUsageEntry> = {};
+  const modelUsage: Record<string, ModelUsageEntry> = {};
+  const skills: SkillEntry[] = [];
+  const agents: AgentEntry[] = [];
+  const mcpTools: Record<string, number> = {};
+  const filesReadMap = new Map<string, number>();
+  const filesModifiedMap = new Map<string, number>();
+  const searchedPaths = new Set<string>();
+  const detectedInstructionPathSet = new Set<string>();
+
   const sessionStartTs = toTimestampMs(sessionObject?.startTime);
   const sessionEndTs = toTimestampMs(sessionObject?.lastUpdated);
   let firstMessageTs: number | null = sessionStartTs;
   let lastMessageTs: number | null = sessionEndTs;
   let firstUserMessage: string | null = null;
   let lastModelMessage: string | null = null;
+  let detectedGitBranch: string | null = extractGitBranch(sessionObject);
+  let detectedEffortMode: string | null = extractEffortMode(sessionObject);
   const turnLatencies: number[] = [];
   let lastUserTimestamp: number | null = null;
 
@@ -142,6 +346,7 @@ export function parseGeminiSession(filePath: string): SessionStats {
         messageCount: 0,
         pricingStatus: "priced",
         unpricedTokens: 0,
+        reasoningTokens: 0,
       };
     }
     return modelUsage[model];
@@ -179,6 +384,14 @@ export function parseGeminiSession(filePath: string): SessionStats {
     const roleNormalized = role.toLowerCase();
     const model = getModelName(msg);
     if (model) ensureModel(model);
+    const effortMode = extractEffortMode(msg);
+    if (effortMode) detectedEffortMode = effortMode;
+    const gitBranch = extractGitBranch(msg);
+    if (gitBranch) detectedGitBranch = gitBranch;
+    const thoughtCount = Array.isArray(msg.thoughts) ? msg.thoughts.length : 0;
+    if (thoughtCount > 0) {
+      stats.thinkingBlocks += thoughtCount;
+    }
 
     if (roleNormalized === "user" && !firstUserMessage) {
       const text = extractMessageText(msg.content, msg.parts);
@@ -209,6 +422,11 @@ export function parseGeminiSession(filePath: string): SessionStats {
       modelEntry.outputTokens += tokenSnapshot.outputTokens;
       modelEntry.cacheReadTokens += tokenSnapshot.cacheReadTokens;
       modelEntry.cacheWriteTokens += tokenSnapshot.cacheWriteTokens;
+      modelEntry.reasoningTokens =
+        (modelEntry.reasoningTokens || 0) + tokenSnapshot.reasoningTokens;
+      if (tokenSnapshot.reasoningTokens > 0 && thoughtCount === 0) {
+        stats.thinkingBlocks++;
+      }
       const costResult = calculateCostDetailed(
         modelForTokens,
         tokenSnapshot.inputTokens,
@@ -235,11 +453,39 @@ export function parseGeminiSession(filePath: string): SessionStats {
 
     for (const call of extractToolCalls(msg)) {
       if (!call.name) continue;
+      const normalizedName = call.name.toLowerCase();
       const entry = ensureTool(call.name);
       entry.count++;
       stats.toolCallCount++;
-      if (isErrorStatus(call.status)) {
+      if (isErrorStatus(call.status) || hasToolResultError(call.result)) {
         entry.errorCount++;
+      }
+      if (normalizedName.startsWith("mcp__")) {
+        const segments = call.name.split("__");
+        const serverName = segments[1] || call.name;
+        mcpTools[serverName] = (mcpTools[serverName] || 0) + 1;
+      }
+      if (normalizedName === "skill") {
+        const skillName =
+          getStringValue(call.args?.skill) ?? getStringValue(call.args?.name);
+        if (skillName) {
+          const existing = skills.find((s) => s.name === skillName);
+          if (existing) existing.count++;
+          else skills.push({ name: skillName, count: 1 });
+        }
+      }
+      if (normalizedName === "task" || normalizedName === "spawn_agent") {
+        const agentType =
+          getStringValue(call.args?.subagent_type) ??
+          getStringValue(call.args?.agent_type) ??
+          getStringValue(call.args?.agentType) ??
+          getStringValue(call.args?.name);
+        if (agentType) {
+          agents.push({
+            type: agentType,
+            description: getStringValue(call.args?.description) ?? "",
+          });
+        }
       }
       trackToolPaths(
         call.name,
@@ -268,13 +514,33 @@ export function parseGeminiSession(filePath: string): SessionStats {
 
   for (const fr of filesRead) {
     if (fr.category === "knowledge" || fr.category === "instruction") {
-      detectedInstructionPaths.push(fr.path);
+      detectedInstructionPathSet.add(fr.path);
     }
   }
+  for (const skill of skills) {
+    for (const candidate of getSkillPathCandidates(skill.name, projectPath)) {
+      detectedInstructionPathSet.add(candidate);
+    }
+  }
+  for (const agent of agents) {
+    for (const candidate of getAgentPathCandidates(agent.type, projectPath)) {
+      detectedInstructionPathSet.add(candidate);
+    }
+  }
+  const detectedInstructionPaths = [...detectedInstructionPathSet];
 
   const coreTools: Record<string, number> = {};
   const otherTools: Record<string, number> = {};
   for (const [name, entry] of Object.entries(toolUsage)) {
+    const normalizedName = name.toLowerCase();
+    if (
+      normalizedName === "skill" ||
+      normalizedName === "task" ||
+      normalizedName === "spawn_agent" ||
+      normalizedName.startsWith("mcp__")
+    ) {
+      continue;
+    }
     if (isCoreToolForProvider(name, "gemini")) coreTools[name] = entry.count;
     else otherTools[name] = entry.count;
   }
@@ -299,12 +565,20 @@ export function parseGeminiSession(filePath: string): SessionStats {
     }
   }
 
+  const tags: string[] = [];
+  if (agents.length > 0) {
+    const spawnedTypes = new Set(agents.map((a) => a.type));
+    for (const t of spawnedTypes) tags.push(`spawns:${t}`);
+  }
+  for (const s of skills) tags.push(`skill:${s.name}`);
+
   stats.toolUsage = toolUsage;
   stats.modelUsage = modelUsage;
+  stats.tags = tags;
   stats.enrichedTools = {
-    skills: [],
-    agents: [],
-    mcpTools: {},
+    skills,
+    agents,
+    mcpTools,
     coreTools,
     otherTools,
     filesModified,
@@ -312,7 +586,12 @@ export function parseGeminiSession(filePath: string): SessionStats {
     searchedPaths: [...searchedPaths],
   };
   stats.detectedInstructionPaths = detectedInstructionPaths;
-  stats.autoSummary = lastModelMessage || firstUserMessage;
+  stats.autoSummary =
+    lastModelMessage || readSessionSummary(sessionObject) || firstUserMessage;
+  stats.firstPrompt = firstUserMessage;
+  stats.projectPath = projectPath;
+  stats.gitBranch = detectedGitBranch;
+  stats.effortMode = detectedEffortMode;
 
   const latency = summarizeLatencies(turnLatencies);
   stats.avgLatencyMs = latency.avgLatencyMs;
@@ -441,6 +720,7 @@ function extractTokens(tokens: unknown): {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  reasoningTokens: number;
 } | null {
   if (!isRecord(tokens)) return null;
   const inputTokens =
@@ -450,7 +730,7 @@ function extractTokens(tokens: unknown): {
     asNumber(tokens.promptTokenCount) ??
     asNumber(tokens.prompt_tokens) ??
     0;
-  const outputTokens =
+  const outputTokensExplicit =
     asNumber(tokens.output) ??
     asNumber(tokens.outputTokens) ??
     asNumber(tokens.output_tokens) ??
@@ -480,27 +760,53 @@ function extractTokens(tokens: unknown): {
     asNumber(tokens.cacheCreationTokens) ??
     asNumber(tokens.cache_creation_tokens) ??
     0;
+  const reasoningTokens =
+    asNumber(tokens.thoughts) ??
+    asNumber(tokens.reasoning) ??
+    asNumber(tokens.reasoningTokens) ??
+    asNumber(tokens.reasoning_tokens) ??
+    asNumber(tokens.thoughtTokenCount) ??
+    asNumber(tokens.thought_tokens) ??
+    0;
+  const toolTokens =
+    asNumber(tokens.tool) ??
+    asNumber(tokens.toolTokens) ??
+    asNumber(tokens.tool_tokens) ??
+    0;
+  const outputTokens =
+    outputTokensExplicit > 0
+      ? outputTokensExplicit
+      : Math.max(reasoningTokens, toolTokens);
 
   if (
     inputTokens === 0 &&
     outputTokens === 0 &&
     cacheReadTokens === 0 &&
-    cacheWriteTokens === 0
+    cacheWriteTokens === 0 &&
+    reasoningTokens === 0
   ) {
     return null;
   }
-  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+  };
 }
 
 function extractToolCalls(msg: GeminiMessage): Array<{
   name: string;
   args?: Record<string, unknown>;
   status?: string;
+  result?: unknown;
 }> {
   const calls: Array<{
     name: string;
     args?: Record<string, unknown>;
     status?: string;
+    result?: unknown;
   }> = [];
 
   if (Array.isArray(msg.toolCalls)) {
@@ -512,7 +818,11 @@ function extractToolCalls(msg: GeminiMessage): Array<{
         ? (call.args as Record<string, unknown>)
         : undefined;
       const status = typeof call.status === "string" ? call.status : undefined;
-      calls.push({ name, args, status });
+      const result =
+        call.result ??
+        call.response ??
+        (call.error ? { error: call.error } : undefined);
+      calls.push({ name, args, status, result });
     }
   }
 
@@ -549,7 +859,18 @@ function incrementPathCount(map: Map<string, number>, path: string) {
 
 function getPathFromArgs(args: Record<string, unknown> | undefined): string | null {
   if (!args) return null;
-  const candidates = ["file_path", "path", "filePath", "target", "dir"];
+  const candidates = [
+    "file_path",
+    "path",
+    "filePath",
+    "target",
+    "dir",
+    "dir_path",
+    "directory",
+    "cwd",
+    "workspace",
+    "root",
+  ];
   for (const key of candidates) {
     const value = args[key];
     if (typeof value === "string" && value.trim().length > 0) {

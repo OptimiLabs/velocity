@@ -243,4 +243,39 @@ describe("POST /api/agents/build-chat (route)", () => {
     expect(spawnMock).not.toHaveBeenCalled();
     expect(aiGenerateMock).not.toHaveBeenCalled();
   });
+
+  it("adds current agent config context for iterative edits", async () => {
+    aiGenerateMock.mockResolvedValueOnce(
+      "Updated response\n\n```agent-config\n{\"name\":\"x\"}\n```",
+    );
+
+    const { POST } = await import("@/app/api/agents/build-chat/route");
+    const req = new Request("http://localhost/api/agents/build-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai",
+        messages: [{ role: "user", content: "Tighten escalation policy" }],
+        currentConfig: {
+          name: "release-guardian",
+          prompt: "Current prompt with rollout checks",
+        },
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const generationOptions = aiGenerateMock.mock.calls.at(-1)?.[1] as
+      | { system?: string }
+      | undefined;
+    expect(generationOptions?.system).toContain(
+      "Current agent config (edit in-place)",
+    );
+    expect(generationOptions?.system).toContain("release-guardian");
+    expect(generationOptions?.system).toContain(
+      "Current prompt with rollout checks",
+    );
+  });
 });

@@ -344,15 +344,22 @@
 .xterm {
   padding: 4px;
 }
-.xterm-viewport {
+.terminal-container .xterm-viewport {
   scrollbar-width: thin;
+  scrollbar-color: oklch(0.45 0 0) transparent;
 }
-.xterm-viewport::-webkit-scrollbar {
+.terminal-container .xterm-viewport::-webkit-scrollbar {
   width: 6px;
 }
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: oklch(0.35 0 0);
+.terminal-container .xterm-viewport::-webkit-scrollbar-thumb {
+  background: oklch(0.45 0 0);
   border-radius: 3px;
+}
+.terminal-container[data-terminal-theme="light"] .xterm-viewport {
+  scrollbar-color: oklch(0.62 0 0) transparent;
+}
+.terminal-container[data-terminal-theme="light"] .xterm-viewport::-webkit-scrollbar-thumb {
+  background: oklch(0.62 0 0);
 }
 .terminal-container .xterm {
   height: 100%;

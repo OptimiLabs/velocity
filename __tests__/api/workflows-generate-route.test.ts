@@ -294,4 +294,52 @@ describe("POST /api/workflows/generate", () => {
     expect(aiGenerateMock).toHaveBeenCalledTimes(2);
     expect(data.nodes.some((n) => /regression tests/i.test(n.label))).toBe(true);
   });
+
+  it("keeps generation prompts portable even when cwd is provided", async () => {
+    aiGenerateMock.mockResolvedValue(
+      JSON.stringify({
+        name: "Portable Plan",
+        plan: "Keep paths portable",
+        tasks: [
+          {
+            id: "step-1",
+            label: "Plan implementation",
+            taskDescription:
+              "Create src/feature.ts and tests/feature.test.ts using project-relative paths and acceptance criteria.",
+            agentName: "feature-planner",
+            dependsOn: [],
+            skills: [],
+            effort: "medium",
+          },
+        ],
+      }),
+    );
+
+    const { POST } = await import("@/app/api/workflows/generate/route");
+    const req = new Request("http://localhost/api/workflows/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Build a reusable feature workflow",
+        cwd: "/Users/jaelee/side-projects/claude-best",
+      }),
+    });
+
+    const res = await POST(req as never);
+    const data = (await res.json()) as { nodes: Array<{ id: string }> };
+
+    expect(res.status).toBe(200);
+    expect(data.nodes.length).toBe(1);
+    expect(aiGenerateMock.mock.calls.length).toBeGreaterThan(0);
+
+    const [userPrompt, options] = aiGenerateMock.mock.calls[0] as [
+      string,
+      { cwd?: string },
+    ];
+    expect(userPrompt).toContain("Goal: Build a reusable feature workflow");
+    expect(userPrompt).toContain("selected at runtime");
+    expect(userPrompt).not.toContain("/Users/jaelee/side-projects/claude-best");
+    expect(userPrompt).not.toContain("claude-best");
+    expect(options.cwd).toContain("velocity-workflow-planner");
+  });
 });

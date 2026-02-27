@@ -12,7 +12,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { HookEditor, type HookConfig, formatTimeout } from "@/components/settings/HookEditor";
-import { HookLifecycleDiagram } from "@/components/settings/HookLifecycleDiagram";
+import {
+  HookLifecycleDiagram,
+  type HookLifecyclePhase,
+} from "@/components/settings/HookLifecycleDiagram";
 import type { ClaudeSettings } from "@/lib/claude-settings";
 import type { HookRule } from "@/lib/hooks/matcher";
 import { normalizeTimeout } from "@/lib/hooks/hook-editor-utils";
@@ -133,6 +136,20 @@ export function HooksTab({
     return counts;
   }, [hooks]);
 
+  const lifecyclePhases = useMemo<HookLifecyclePhase[]>(() => {
+    return profile.eventGroups.map((group) => ({
+      label: group.label,
+      events: group.events.map((eventId) => ({
+        id: eventId,
+        label: eventId,
+        description: profile.eventDescriptions[eventId] ?? eventId,
+        frequency:
+          profile.eventFrequency[eventId]?.label.replace(/^Fires /, "") ??
+          "Varies",
+      })),
+    }));
+  }, [profile]);
+
   const toggle = (id: string) =>
     setExpanded((prev) => (prev === id ? null : id));
 
@@ -208,18 +225,13 @@ export function HooksTab({
 
   return (
     <div className="space-y-6">
-      {/* Lifecycle diagram is Claude-specific today; Gemini uses a simpler event list. */}
-      {provider === "claude" ? (
-        <HookLifecycleDiagram
-          onEventClick={handleEventClick}
-          activeEvents={activeEvents}
-          hookCounts={hookCounts}
-        />
-      ) : (
-        <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          Gemini hooks support command automations across prompt, tool, agent, and session events.
-        </div>
-      )}
+      <HookLifecycleDiagram
+        onEventClick={handleEventClick}
+        activeEvents={activeEvents}
+        hookCounts={hookCounts}
+        phases={lifecyclePhases}
+        eventRuntimeRequirements={profile.eventRuntimeRequirements}
+      />
 
       {/* Hook Events Accordion */}
       <section className="space-y-1">

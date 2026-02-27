@@ -16,6 +16,13 @@ import {
   ChevronDown,
   Zap,
   Clock,
+  Activity,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Ban,
+  Trash2,
+  Square,
   PanelLeftClose,
   PanelLeft,
 } from "lucide-react";
@@ -34,6 +41,7 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -50,6 +58,11 @@ import {
   parseUsageProvider,
   USAGE_PROVIDER_STORAGE_KEY,
 } from "@/lib/usage/provider-filter";
+import { useConsole } from "@/components/providers/ConsoleProvider";
+import {
+  type ProcessingJob,
+  useProcessingStore,
+} from "@/stores/processingStore";
 
 const pageTitles: Record<string, string> = {
   "/": "Console",
@@ -96,6 +109,50 @@ function getUsageProviderLabel(provider: ConfigProvider | null): string {
   return getSessionProvider(provider)?.label ?? provider;
 }
 
+function formatDurationLabel(ms: number): string {
+  const clamped = Math.max(0, ms);
+  const seconds = Math.floor(clamped / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
+function formatRelativeLabel(ts: number, now: number): string {
+  const diffMs = Math.max(0, now - ts);
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+function jobStatusLabel(job: ProcessingJob): string {
+  if (job.status === "running") return "Running";
+  if (job.status === "completed") return "Completed";
+  if (job.status === "failed") return "Failed";
+  return "Canceled";
+}
+
+function jobStatusIcon(job: ProcessingJob) {
+  if (job.status === "running") {
+    return <Loader2 size={12} className="animate-spin text-blue-500" />;
+  }
+  if (job.status === "completed") {
+    return <CheckCircle2 size={12} className="text-emerald-500" />;
+  }
+  if (job.status === "failed") {
+    return <XCircle size={12} className="text-red-500" />;
+  }
+  return <Ban size={12} className="text-muted-foreground" />;
+}
+
 function BlockResetCountdown({ resetsAt, startedAt }: { resetsAt: string; startedAt?: string }) {
   const [resetStr, setResetStr] = useState<string | null>(null);
   useEffect(() => {
@@ -135,6 +192,7 @@ interface HeaderProps {
 }
 
 export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
+  const { wsState } = useConsole();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -150,6 +208,8 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
   const [reindexMenuOpen, setReindexMenuOpen] = useState(false);
   const [reindexMode, setReindexMode] = useState<"incremental" | "rebuild" | "nuke">("incremental");
   const [blockPopoverOpen, setBlockPopoverOpen] = useState(false);
+  const [processingPopoverOpen, setProcessingPopoverOpen] = useState(false);
+  const [jobClockNow, setJobClockNow] = useState(() => Date.now());
   const isUsageRoute = pathname.startsWith("/usage");
   const shouldLoadUsageDetails = blockPopoverOpen;
   const shouldLoadWeekSettings = blockPopoverOpen || isUsageRoute;
@@ -166,6 +226,9 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
   const { data: realUsage } = useRealUsage(shouldLoadUsageDetails);
   const { data: weekSettings } = useWeekSettings(shouldLoadWeekSettings);
   const updateSettings = useUpdateBlockSettings();
+  const processingJobs = useProcessingStore((s) => s.jobs);
+  const clearFinishedJobs = useProcessingStore((s) => s.clearFinished);
+  const cancelProcessingJob = useProcessingStore((s) => s.cancelJob);
   const weekStartDay = weekSettings?.statuslineWeekStartDay ?? 0;
   const weekStartHour = weekSettings?.statuslineWeekStartHour ?? 0;
   const selectedUsageProviderLabel = getUsageProviderLabel(selectedUsageProvider);
@@ -260,6 +323,39 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
       : hasSessionUsage
         ? "border-border/60 bg-background/80 text-foreground"
         : "border-border/50 bg-background/60 text-muted-foreground";
+  const runningProcessingJobs = useMemo(
+    () =>
+      processingJobs
+        .filter((job) => job.status === "running")
+        .sort((a, b) => b.startedAt - a.startedAt),
+    [processingJobs],
+  );
+  const recentProcessingJobs = useMemo(
+    () =>
+      processingJobs
+        .filter((job) => job.status !== "running")
+        .sort(
+          (a, b) =>
+            (b.finishedAt ?? b.startedAt) - (a.finishedAt ?? a.startedAt),
+        )
+        .slice(0, 24),
+    [processingJobs],
+  );
+  const runningProcessingCount = runningProcessingJobs.length;
+  const hasFailedProcessing = recentProcessingJobs.some(
+    (job) => job.status === "failed",
+  );
+
+  useEffect(() => {
+    if (runningProcessingCount === 0) return;
+    const timer = window.setInterval(() => setJobClockNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, [runningProcessingCount]);
+
+  useEffect(() => {
+    if (!processingPopoverOpen) return;
+    setJobClockNow(Date.now());
+  }, [processingPopoverOpen, processingJobs.length]);
 
   // Mount the auto-index timer
   useAutoIndex(interval);
@@ -272,6 +368,15 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
       ) || ""
     ] ||
     "";
+  const wsConnected = wsState === "connected";
+  const wsStatusLabel =
+    wsState === "connected"
+      ? "WS connected"
+      : wsState === "connecting"
+        ? "WS connecting"
+        : wsState === "reconnecting"
+          ? "WS reconnecting"
+          : "WS disconnected";
 
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
@@ -389,6 +494,189 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {!wsConnected && (
+            <div
+              className="hidden items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400 sm:flex"
+              title="Live terminal WebSocket is unavailable. Console live actions are paused, and AI Assist flows that rely on CLI execution may fail until reconnect."
+            >
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/75" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-500" />
+              </span>
+              {wsStatusLabel}
+            </div>
+          )}
+          <Popover
+            open={processingPopoverOpen}
+            onOpenChange={setProcessingPopoverOpen}
+          >
+            <PopoverTrigger asChild>
+              <button
+                className="group flex h-8 items-center gap-2 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs transition-colors hover:bg-muted/50 data-[state=open]:border-primary/30 data-[state=open]:bg-primary/5"
+                title="View AI processing activity and history"
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-border/50 bg-background/70">
+                  {runningProcessingCount > 0 ? (
+                    <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                  ) : (
+                    <Activity className="h-3 w-3 text-muted-foreground" />
+                  )}
+                </span>
+                <span className="font-medium text-foreground/85">
+                  Processing
+                </span>
+                <span
+                  className={cn(
+                    "rounded-md border px-1.5 py-0.5 font-medium tabular-nums",
+                    runningProcessingCount > 0
+                      ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-300"
+                      : hasFailedProcessing
+                        ? "border-red-500/30 bg-red-500/10 text-red-500 dark:text-red-300"
+                        : "border-border/60 bg-background/80 text-muted-foreground",
+                  )}
+                >
+                  {runningProcessingCount > 0
+                    ? `${runningProcessingCount} running`
+                    : `${recentProcessingJobs.length} recent`}
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              side="bottom"
+              align="end"
+              className="w-[360px] overflow-hidden rounded-xl border-border/70 bg-card/95 p-0 shadow-xl"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-border/50 bg-background/85 px-3 py-2.5">
+                <div className="min-w-0 space-y-0.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                    AI Processing
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    Tracks currently running AI assists across app features.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearFinishedJobs}
+                  className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <Trash2 size={11} />
+                  Clear
+                </button>
+              </div>
+              <ScrollArea className="max-h-[420px]">
+                <div className="space-y-3 p-2.5">
+                  <section className="space-y-1.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Running now
+                    </div>
+                    {runningProcessingJobs.length === 0 ? (
+                      <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
+                        No active processing jobs.
+                      </div>
+                    ) : (
+                      runningProcessingJobs.map((job) => (
+                        <div
+                          key={job.id}
+                          className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-foreground">
+                                {job.title}
+                              </p>
+                              {job.subtitle && (
+                                <p className="truncate text-[11px] text-muted-foreground">
+                                  {job.subtitle}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  cancelProcessingJob(
+                                    job.id,
+                                    "Stopped from AI Processing panel",
+                                  )
+                                }
+                                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                                title="Stop this running job"
+                              >
+                                <Square size={10} />
+                                Stop
+                              </button>
+                              {jobStatusIcon(job)}
+                            </div>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span>
+                              {job.provider ? `${job.provider} · ` : ""}
+                              {jobStatusLabel(job)}
+                            </span>
+                            <span>
+                              {formatDurationLabel(jobClockNow - job.startedAt)}
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </section>
+
+                  <section className="space-y-1.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Recent history
+                    </div>
+                    {recentProcessingJobs.length === 0 ? (
+                      <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
+                        No completed jobs yet.
+                      </div>
+                    ) : (
+                      recentProcessingJobs.map((job) => (
+                        <div
+                          key={job.id}
+                          className="rounded-md border border-border/60 bg-background/70 px-2.5 py-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-foreground">
+                                {job.title}
+                              </p>
+                              {job.subtitle && (
+                                <p className="truncate text-[11px] text-muted-foreground">
+                                  {job.subtitle}
+                                </p>
+                              )}
+                              {job.error && (
+                                <p className="mt-0.5 line-clamp-2 text-[11px] text-red-500/90 dark:text-red-300">
+                                  {job.error}
+                                </p>
+                              )}
+                            </div>
+                            {jobStatusIcon(job)}
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span>
+                              {job.provider ? `${job.provider} · ` : ""}
+                              {jobStatusLabel(job)}
+                            </span>
+                            <span>
+                              {job.durationMs != null
+                                ? formatDurationLabel(job.durationMs)
+                                : formatRelativeLabel(
+                                    job.finishedAt ?? job.startedAt,
+                                    jobClockNow,
+                                  )}
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </section>
+                </div>
+              </ScrollArea>
+            </PopoverContent>
+          </Popover>
           {blockUsage && (
             <div className="flex items-center gap-2">
               <Popover

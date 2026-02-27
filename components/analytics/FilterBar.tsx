@@ -410,6 +410,9 @@ function ChipEditor({
     const options = sortModelOptions(filterOptions?.models ?? []);
     const modelOp = filters.modelOp ?? "or";
     const activeProvider = filters.provider;
+    const providerScopedOptions = activeProvider
+      ? options.filter((m) => modelMatchesProvider(m, activeProvider))
+      : options;
     return (
       <div className="space-y-0.5">
         <div className="flex items-center justify-between px-1 pb-1">
@@ -440,7 +443,7 @@ function ChipEditor({
             Showing {getSessionProvider(activeProvider)?.label ?? activeProvider} models
           </div>
         )}
-        {options.map((m) => {
+        {providerScopedOptions.map((m) => {
           const checked = selected.includes(m);
           const modelProvider = detectProviderForModel(m);
           return (
@@ -469,9 +472,11 @@ function ChipEditor({
             </button>
           );
         })}
-        {options.length === 0 && (
+        {providerScopedOptions.length === 0 && (
           <div className="text-xs text-muted-foreground px-2 py-2">
-            No models found in date range
+            {activeProvider
+              ? `No ${getSessionProvider(activeProvider)?.label ?? activeProvider} models found in date range`
+              : "No models found in date range"}
           </div>
         )}
       </div>

@@ -57,6 +57,73 @@ function saveEdges(edges: Edge[]) {
   } catch {}
 }
 
+function areStringArraysEqual(a?: string[], b?: string[]) {
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function areNodeDataEquivalent(
+  a: AgentCanvasNodeData,
+  b: AgentCanvasNodeData,
+) {
+  return (
+    a.name === b.name &&
+    a.description === b.description &&
+    a.model === b.model &&
+    a.color === b.color &&
+    a.icon === b.icon &&
+    a.category === b.category &&
+    a.toolCount === b.toolCount &&
+    a.usageCount === b.usageCount &&
+    a.workflowRole === b.workflowRole &&
+    a.workflowStatus === b.workflowStatus &&
+    a.selected === b.selected &&
+    a.dimmed === b.dimmed &&
+    a.enabled === b.enabled &&
+    a.source === b.source &&
+    a.scope === b.scope &&
+    a.skillCount === b.skillCount &&
+    areStringArraysEqual(a.skillNames, b.skillNames)
+  );
+}
+
+function areNodesEquivalent(prev: Node[], next: Node[]) {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (
+      a.id !== b.id ||
+      a.type !== b.type ||
+      a.position.x !== b.position.x ||
+      a.position.y !== b.position.y
+    ) {
+      return false;
+    }
+    const aData = a.data as AgentCanvasNodeData;
+    const bData = b.data as AgentCanvasNodeData;
+    if (!areNodeDataEquivalent(aData, bData)) return false;
+  }
+  return true;
+}
+
+function areEdgesEquivalent(prev: Edge[], next: Edge[]) {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (a.id !== b.id || a.source !== b.source || a.target !== b.target) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const defaultEdgeOptions = {
   type: "smoothstep" as const,
   animated: true,
@@ -120,12 +187,12 @@ interface WorkspaceCanvasProps {
   onDropAgent: (name: string, position: { x: number; y: number }) => void;
   onAttachSkill?: (agentName: string, skillId: string) => void;
   onEdgesChange?: (edges: Edge[]) => void;
-  onEditAgent?: (name: string) => void;
+  onEditAgent?: (name: string, nodeId?: string) => void;
   onDeleteAgent?: (name: string, nodeId?: string) => void;
   canDeleteAgent?: (agent?: Agent) => boolean;
   deleteAgentLabel?: string;
   onRemoveFromWorkspace?: (id: string) => void;
-  onDuplicateAgent?: (name: string) => void;
+  onDuplicateAgent?: (name: string, nodeId?: string) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
   onNodesDelete?: (nodeIds: string[]) => void;
   onClearEdges?: () => void;
@@ -157,10 +224,18 @@ export function WorkspaceCanvas({
   hasMultiSelection,
 }: WorkspaceCanvasProps) {
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
+  const onAttachSkillRef = useRef(onAttachSkill);
   const [isDragOver, setIsDragOver] = useState(false);
   const [mounted, setMounted] = useState(false);
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    onAttachSkillRef.current = onAttachSkill;
+  }, [onAttachSkill]);
+
+  const handleAttachSkill = useCallback((agentName: string, skillId: string) => {
+    onAttachSkillRef.current?.(agentName, skillId);
+  }, []);
 
   // Map workflow node info by node ID (instance ID or agent name for legacy)
   const workflowNodeMap = useMemo(() => {
@@ -218,7 +293,7 @@ export function WorkspaceCanvas({
         scope: agent.scope,
         skillCount: agent.skills?.length ?? 0,
         skillNames: agent.skills ?? [],
-        onAttachSkill,
+        onAttachSkill: handleAttachSkill,
       };
 
       return {
@@ -232,7 +307,7 @@ export function WorkspaceCanvas({
     agents,
     selectedId,
     workflowNodeMap,
-    onAttachSkill,
+    handleAttachSkill,
     mounted,
     multiSelectedIds,
   ]);
@@ -297,10 +372,10 @@ export function WorkspaceCanvas({
 
   // Sync when data changes
   useEffect(() => {
-    setNodes(initialNodes);
+    setNodes((prev) => (areNodesEquivalent(prev, initialNodes) ? prev : initialNodes));
   }, [initialNodes, setNodes]);
   useEffect(() => {
-    setEdges(initialEdges);
+    setEdges((prev) => (areEdgesEquivalent(prev, initialEdges) ? prev : initialEdges));
   }, [initialEdges, setEdges]);
 
   // Clear ReactFlow internal node selection when parent requests it
@@ -618,7 +693,10 @@ export function WorkspaceCanvas({
           >
             {onEditAgent && (
               <button
-                onClick={() => { onEditAgent(nodeMenu.agentName); setNodeMenu(null); }}
+                onClick={() => {
+                  onEditAgent(nodeMenu.agentName, nodeMenu.nodeId);
+                  setNodeMenu(null);
+                }}
                 className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent flex items-center gap-2"
               >
                 <Pencil size={12} />
@@ -627,7 +705,10 @@ export function WorkspaceCanvas({
             )}
             {onDuplicateAgent && (
               <button
-                onClick={() => { onDuplicateAgent(nodeMenu.agentName); setNodeMenu(null); }}
+                onClick={() => {
+                  onDuplicateAgent(nodeMenu.agentName, nodeMenu.nodeId);
+                  setNodeMenu(null);
+                }}
                 className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent flex items-center gap-2"
               >
                 <Copy size={12} />

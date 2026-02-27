@@ -55,10 +55,63 @@ function hasSize(el: HTMLElement | null): boolean {
   return !!el && el.offsetWidth >= MIN_TERMINAL_PX && el.offsetHeight >= MIN_TERMINAL_PX;
 }
 
+const FALLBACK_TERMINAL_THEME_KEY = "one-dark";
+
+function resolveTerminalThemeKey(themeKey?: string): string {
+  if (themeKey && TERMINAL_THEMES[themeKey]) return themeKey;
+  if (DEFAULT_APPEARANCE.theme && TERMINAL_THEMES[DEFAULT_APPEARANCE.theme]) {
+    return DEFAULT_APPEARANCE.theme;
+  }
+  return FALLBACK_TERMINAL_THEME_KEY;
+}
+
+function resolveTerminalTheme(themeKey?: string) {
+  const key = resolveTerminalThemeKey(themeKey);
+  return {
+    key,
+    theme:
+      TERMINAL_THEMES[key]?.theme ??
+      TERMINAL_THEMES[FALLBACK_TERMINAL_THEME_KEY].theme,
+  };
+}
+
+function applyTerminalContainerTheme(
+  container: HTMLElement,
+  themeKey?: string,
+): void {
+  const resolved = resolveTerminalTheme(themeKey);
+  container.style.background =
+    resolved.theme.background ??
+    TERMINAL_THEMES[FALLBACK_TERMINAL_THEME_KEY].theme.background ??
+    "#1a1a1a";
+  container.dataset.terminalTheme = resolved.key;
+}
+
 function normalizeGeminiInvalidCommandHelp(output: string): string {
   if (!output.includes("gemini --help")) return output;
   if (!/\b(?:unknown|invalid)\s+command\b/i.test(output)) return output;
   return output.replace(/\bgemini\s+--help\b/g, "gemini help");
+}
+
+function writeCliFallbackHint(term: Terminal, originalCommand: string): void {
+  const normalized = originalCommand.toLowerCase();
+  if (normalized === "claude") {
+    term.write(`\x1b[33m  Claude Code CLI not found — opened a shell instead.\x1b[0m\r\n`);
+    term.write(`\x1b[33m  Install it:  npm install -g @anthropic-ai/claude-code\x1b[0m\r\n`);
+    term.write(`\x1b[33m  More info:   https://docs.anthropic.com/en/docs/claude-code\x1b[0m\r\n\r\n`);
+    return;
+  }
+  if (normalized === "codex") {
+    term.write(`\x1b[33m  Codex CLI not found — opened a shell instead.\x1b[0m\r\n`);
+    term.write(`\x1b[33m  Install Codex CLI and ensure "codex" is on your PATH.\x1b[0m\r\n\r\n`);
+    return;
+  }
+  if (normalized === "gemini") {
+    term.write(`\x1b[33m  Gemini CLI not found — opened a shell instead.\x1b[0m\r\n`);
+    term.write(`\x1b[33m  Install Gemini CLI and ensure "gemini" is on your PATH.\x1b[0m\r\n\r\n`);
+    return;
+  }
+  term.write(`\x1b[33m  "${originalCommand}" not found — opened a shell instead.\x1b[0m\r\n\r\n`);
 }
 
 export function TerminalPanel({
@@ -75,8 +128,19 @@ export function TerminalPanel({
 }: TerminalPanelProps) {
   const { data: settings } = useSettings();
   const appearance = settings?.terminalAppearance ?? {};
+  const isLightTheme =
+    resolveTerminalThemeKey(appearance.theme ?? DEFAULT_APPEARANCE.theme) ===
+    "light";
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
+  const bellStyleRef = useRef<"visual" | "badge" | "none">(
+    (appearance.bellStyle ??
+      DEFAULT_APPEARANCE.bellStyle ??
+      "visual") as "visual" | "badge" | "none",
+  );
+  bellStyleRef.current = (appearance.bellStyle ??
+    DEFAULT_APPEARANCE.bellStyle ??
+    "visual") as "visual" | "badge" | "none";
 
   const [searchVisible, setSearchVisible] = useState(false);
   const [bellFlash, setBellFlash] = useState(false);
@@ -100,11 +164,20 @@ export function TerminalPanel({
   const terminalLifecycleStateRef = useRef<
     "active" | "exited" | "dead" | "unknown"
   >("unknown");
+  const liveOutputSeenRef = useRef(false);
 
   // Ref for terminalId — read from closures to avoid stale captures
   // when React reuses the component instance with a different terminalId prop
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  const envOverridesRef = useRef(envOverrides);
+  envOverridesRef.current = envOverrides;
+  const commandRef = useRef(command);
+  commandRef.current = command;
+  const argsRef = useRef(args);
+  argsRef.current = args;
 
   const sendWs = useCallback(
     (data: unknown): boolean => {
@@ -118,6 +191,31 @@ export function TerminalPanel({
     [wsRef],
   );
 
+  // Global find shortcut for the active terminal.
+  // This keeps Ctrl/Cmd+F working even when focus is outside xterm's hidden textarea.
+  useEffect(() => {
+    if (!isActive) return;
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.shiftKey) return;
+      if (ev.key.toLowerCase() !== "f") return;
+
+      const target = ev.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isTextInput =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        target?.isContentEditable === true;
+      if (isTextInput) return;
+
+      ev.preventDefault();
+      setSearchVisible(true);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [isActive]);
+
   // Keep refs in sync for the settle-detection closure
   const pendingPromptRef = useRef(pendingPrompt);
   pendingPromptRef.current = pendingPrompt;
@@ -130,19 +228,14 @@ export function TerminalPanel({
   useEffect(() => {
     promptSentRef.current = false;
     terminalLifecycleStateRef.current = "unknown";
+    liveOutputSeenRef.current = false;
     registerTerminalHandler(terminalId, (msg) => {
       const term = termRef.current;
       if (!term) return;
       try {
         if (msg.type === "pty:spawn-fallback") {
           const origCmd = (msg as { originalCommand?: string }).originalCommand ?? "command";
-          if (origCmd === "claude") {
-            term.write(`\x1b[33m  Claude Code CLI not found — opened a shell instead.\x1b[0m\r\n`);
-            term.write(`\x1b[33m  Install it:  npm install -g @anthropic-ai/claude-code\x1b[0m\r\n`);
-            term.write(`\x1b[33m  More info:   https://docs.anthropic.com/en/docs/claude-code\x1b[0m\r\n\r\n`);
-          } else {
-            term.write(`\x1b[33m  "${origCmd}" not found — opened a shell instead.\x1b[0m\r\n\r\n`);
-          }
+          writeCliFallbackHint(term, origCmd);
           return;
         }
         if (msg.type === "pty:error") {
@@ -150,6 +243,7 @@ export function TerminalPanel({
           return;
         }
         if (msg.type === "pty:output" && msg.data) {
+          liveOutputSeenRef.current = true;
           const output = normalizeGeminiInvalidCommandHelp(msg.data);
           exitedRef.current = false;
           term.write(output);
@@ -279,8 +373,10 @@ export function TerminalPanel({
       if (cached) {
         // Match container background to terminal theme
         const ap = appearanceRef.current;
-        const themeObj = TERMINAL_THEMES[ap.theme ?? DEFAULT_APPEARANCE.theme]?.theme ?? TERMINAL_THEMES["one-dark"].theme;
-        container.style.background = themeObj.background ?? "#1a1a1a";
+        applyTerminalContainerTheme(
+          container,
+          ap.theme ?? DEFAULT_APPEARANCE.theme,
+        );
         container.appendChild(cached.wrapper);
         wrapper = cached.wrapper;
         term = cached.term;
@@ -329,6 +425,9 @@ export function TerminalPanel({
       }
 
       const ap = appearanceRef.current;
+      const resolvedTheme = resolveTerminalTheme(
+        ap.theme ?? DEFAULT_APPEARANCE.theme,
+      );
       const t = new Terminal({
         allowProposedApi: true,
         cols: 80,
@@ -343,7 +442,7 @@ export function TerminalPanel({
         // Smart selection: exclude ~ and : from word separators so double-click
         // selects full paths like ~/projects/app:42
         wordSeparator: ' \t()[]{}\'"`',
-        theme: TERMINAL_THEMES[ap.theme ?? DEFAULT_APPEARANCE.theme]?.theme ?? TERMINAL_THEMES["one-dark"].theme,
+        theme: resolvedTheme.theme,
       });
 
       fitAddon = new FitAddon();
@@ -355,8 +454,10 @@ export function TerminalPanel({
       // into a new container without destroying the xterm canvas/WebGL context.
       // Set container background to match terminal theme so any sub-row gaps
       // at the bottom are invisible (FitAddon can't fill partial rows)
-      const themeObj = TERMINAL_THEMES[ap.theme ?? DEFAULT_APPEARANCE.theme]?.theme ?? TERMINAL_THEMES["one-dark"].theme;
-      container.style.background = themeObj.background ?? "#1a1a1a";
+      applyTerminalContainerTheme(
+        container,
+        ap.theme ?? DEFAULT_APPEARANCE.theme,
+      );
 
       wrapper = document.createElement("div");
       wrapper.style.width = "100%";
@@ -477,23 +578,22 @@ export function TerminalPanel({
       serializeAddonRef.current = serializeAddon;
 
       // Bell handling
-      const bellStyle = ap.bellStyle ?? DEFAULT_APPEARANCE.bellStyle;
-      if (bellStyle !== "none") {
-        t.onBell(() => {
-          if (bellStyle === "visual" || bellStyle === "badge") {
-            // Visual flash
-            setBellFlash(true);
-            setTimeout(() => setBellFlash(false), 200);
-          }
-          if (bellStyle === "badge") {
-            // Mark activity badge
-            try {
-              const store = useConsoleLayoutStore.getState();
-              store.updateTerminalMeta(terminalId, { hasActivity: true });
-            } catch {}
-          }
-        });
-      }
+      t.onBell(() => {
+        const bellStyle = bellStyleRef.current;
+        if (bellStyle === "none") return;
+        if (bellStyle === "visual" || bellStyle === "badge") {
+          // Visual flash
+          setBellFlash(true);
+          setTimeout(() => setBellFlash(false), 200);
+        }
+        if (bellStyle === "badge") {
+          // Mark activity badge
+          try {
+            const store = useConsoleLayoutStore.getState();
+            store.updateTerminalMeta(terminalId, { hasActivity: true });
+          } catch {}
+        }
+      });
 
       term = t;
       termRef.current = term;
@@ -517,7 +617,7 @@ export function TerminalPanel({
       } else {
         // Async fallback: load from IndexedDB (survives page refresh)
         loadScrollback(terminalId).then((idbBuffer) => {
-          if (idbBuffer && !disposed && t) {
+          if (idbBuffer && !disposed && t && !liveOutputSeenRef.current) {
             t.write(idbBuffer);
           }
         });
@@ -530,12 +630,17 @@ export function TerminalPanel({
       const basePayload = {
         type: "pty:create" as const,
         terminalId,
-        cwd,
-        ...(envOverrides && Object.keys(envOverrides).length > 0
-          ? { env: envOverrides }
+        cwd: cwdRef.current,
+        logging:
+          ap.sessionLogging ?? DEFAULT_APPEARANCE.sessionLogging ?? false,
+        ...(envOverridesRef.current &&
+        Object.keys(envOverridesRef.current).length > 0
+          ? { env: envOverridesRef.current }
           : {}),
-        ...(command ? { command } : {}),
-        ...(args && args.length > 0 ? { args } : {}),
+        ...(commandRef.current ? { command: commandRef.current } : {}),
+        ...(argsRef.current && argsRef.current.length > 0
+          ? { args: argsRef.current }
+          : {}),
       };
 
       const sendCreate = () => {
@@ -622,6 +727,11 @@ export function TerminalPanel({
           setSearchVisible(true);
           return false; // prevent default browser search
         }
+        // Cmd/Ctrl+Shift+K clears terminal viewport + scrollback (iTerm2-style)
+        if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && ev.key.toLowerCase() === "k" && ev.type === "keydown") {
+          t.clear();
+          return false;
+        }
         // Track paste for paste history
         if ((ev.metaKey || ev.ctrlKey) && ev.key === "v" && !ev.shiftKey && ev.type === "keydown") {
           navigator.clipboard.readText().then(text => {
@@ -702,12 +812,21 @@ export function TerminalPanel({
           sendWs({
             type: "pty:create",
             terminalId,
-            cwd,
+            cwd: cwdRef.current,
             cols: fitAddonRef.current?.proposeDimensions()?.cols ?? 80,
             rows: fitAddonRef.current?.proposeDimensions()?.rows ?? 24,
-            ...(envOverrides && Object.keys(envOverrides).length > 0 ? { env: envOverrides } : {}),
-            ...(command ? { command } : {}),
-            ...(args && args.length > 0 ? { args } : {}),
+            logging:
+              appearanceRef.current.sessionLogging ??
+              DEFAULT_APPEARANCE.sessionLogging ??
+              false,
+            ...(envOverridesRef.current &&
+            Object.keys(envOverridesRef.current).length > 0
+              ? { env: envOverridesRef.current }
+              : {}),
+            ...(commandRef.current ? { command: commandRef.current } : {}),
+            ...(argsRef.current && argsRef.current.length > 0
+              ? { args: argsRef.current }
+              : {}),
           });
           return false; // prevent default
         }
@@ -814,7 +933,47 @@ export function TerminalPanel({
       initedRef.current = false;
       ptyCreateSentRef.current = false;
     };
-  }, [terminalId, cwd, sendWs, envOverrides, command, args]);
+  }, [terminalId, sendWs]);
+
+  // Apply terminal appearance updates live to already-open terminals.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    const ap = appearanceRef.current;
+    term.options.cursorBlink = ap.cursorBlink ?? DEFAULT_APPEARANCE.cursorBlink;
+    term.options.cursorStyle = ap.cursorStyle ?? DEFAULT_APPEARANCE.cursorStyle;
+    term.options.fontSize = ap.fontSize ?? DEFAULT_APPEARANCE.fontSize;
+    term.options.fontFamily = ap.fontFamily ?? DEFAULT_APPEARANCE.fontFamily;
+    term.options.lineHeight = ap.lineHeight ?? DEFAULT_APPEARANCE.lineHeight;
+    term.options.scrollback = ap.scrollback ?? DEFAULT_APPEARANCE.scrollback;
+    term.options.minimumContrastRatio =
+      ap.minimumContrastRatio ?? DEFAULT_APPEARANCE.minimumContrastRatio;
+    const resolvedTheme = resolveTerminalTheme(
+      ap.theme ?? DEFAULT_APPEARANCE.theme,
+    );
+    term.options.theme = resolvedTheme.theme;
+
+    const container = containerRef.current;
+    if (container) {
+      applyTerminalContainerTheme(container, resolvedTheme.key);
+    }
+
+    try {
+      if (fitAddonRef.current && hasSize(containerRef.current)) {
+        fitAddonRef.current.fit();
+      }
+    } catch {
+      // Render dimensions can be temporarily unavailable during layout transitions.
+    }
+
+    sendWs({
+      type: "pty:resize",
+      terminalId: terminalIdRef.current,
+      cols: term.cols,
+      rows: term.rows,
+    });
+  }, [settings?.terminalAppearance, sendWs]);
 
   // Focus the xterm instance when this pane becomes active.
   // Uses polling retry because termRef.current may be null during the initial
@@ -843,14 +1002,14 @@ export function TerminalPanel({
       };
       if (term) {
         fitTo();
-        term.focus();
-        sendWs({
-          type: "pty:resize",
-          terminalId: terminalIdRef.current,
-          cols: term.cols,
-          rows: term.rows,
-        });
-        return;
+      term.focus();
+      sendWs({
+        type: "pty:resize",
+        terminalId: terminalIdRef.current,
+        cols: term.cols,
+        rows: term.rows,
+      });
+      return;
       }
       let attempts = 0;
       pollTimer = setInterval(() => {
@@ -878,6 +1037,16 @@ export function TerminalPanel({
       if (pollTimer) clearInterval(pollTimer);
     };
   }, [isActive, sendWs]);
+
+  // Keep focus stable for active terminals on cwd updates.
+  // CWD changes are metadata updates and should not require user re-clicking.
+  useEffect(() => {
+    if (!isActive) return;
+    const id = requestAnimationFrame(() => {
+      termRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [cwd, isActive]);
 
   // Save scrollback to IndexedDB on page unload (fire-and-forget)
   useEffect(() => {
@@ -919,14 +1088,21 @@ export function TerminalPanel({
         sendWs({
           type: "pty:create",
           terminalId,
-          cwd,
+          cwd: cwdRef.current,
           cols: dims?.cols ?? 80,
           rows: dims?.rows ?? 24,
-          ...(envOverrides && Object.keys(envOverrides).length > 0
-            ? { env: envOverrides }
+          logging:
+            appearanceRef.current.sessionLogging ??
+            DEFAULT_APPEARANCE.sessionLogging ??
+            false,
+          ...(envOverridesRef.current &&
+          Object.keys(envOverridesRef.current).length > 0
+            ? { env: envOverridesRef.current }
             : {}),
-          ...(command ? { command } : {}),
-          ...(args && args.length > 0 ? { args } : {}),
+          ...(commandRef.current ? { command: commandRef.current } : {}),
+          ...(argsRef.current && argsRef.current.length > 0
+            ? { args: argsRef.current }
+            : {}),
         });
         return true;
       } catch {
@@ -949,6 +1125,18 @@ export function TerminalPanel({
 
   const pasteHistoryOpen = useConsoleLayoutStore((s) => s.pasteHistoryOpen);
   const setPasteHistoryOpen = useConsoleLayoutStore((s) => s.setPasteHistoryOpen);
+  const focusRequestSeq = useConsoleLayoutStore((s) => s.focusRequestSeq);
+
+  // Explicit focus requests from session/group switch handlers.
+  // This covers cases where browser focus moved to sidebar controls but
+  // active pane identity did not change.
+  useEffect(() => {
+    if (!isActive) return;
+    const id = requestAnimationFrame(() => {
+      termRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [focusRequestSeq, isActive]);
 
   const handlePasteFromHistory = useCallback(
     (text: string) => {
@@ -960,7 +1148,11 @@ export function TerminalPanel({
   return (
     <div className="relative h-full w-full" onClick={() => termRef.current?.focus()}>
       {bellFlash && (
-        <div className="absolute inset-0 bg-white/10 pointer-events-none z-10 animate-pulse" />
+        <div
+          className={`absolute inset-0 pointer-events-none z-10 animate-pulse ${
+            isLightTheme ? "bg-black/10" : "bg-white/10"
+          }`}
+        />
       )}
       <TerminalSearch
         searchAddon={searchAddonRef.current}

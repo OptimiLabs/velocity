@@ -27,9 +27,10 @@ interface MCPServerCache {
 
 type MCPToolCache = Record<string, MCPServerCache>;
 
-// Constants reverse-engineered from Claude Code's /context output
-const SYSTEM_PROMPT_TOKENS = 6000;
-const SYSTEM_TOOLS_TOKENS = 18300;
+// We no longer use hardcoded runtime system/base estimates here because
+// they vary by runtime/model and were misleading in practice.
+const SYSTEM_PROMPT_TOKENS = 0;
+const SYSTEM_TOOLS_TOKENS = 0;
 
 function providerLabel(provider: ConfigProvider): string {
   if (provider === "codex") return "Codex";

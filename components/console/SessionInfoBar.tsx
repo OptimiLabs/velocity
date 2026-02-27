@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Copy, Check, RotateCcw, FolderOpen } from "lucide-react";
+import {
+  Copy,
+  Check,
+  RotateCcw,
+  FolderOpen,
+  Settings,
+} from "lucide-react";
 import { DEFAULT_MODEL, MODELS } from "@/lib/console/models";
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -15,7 +21,9 @@ interface SessionInfoBarProps {
   cwd: string;
   model?: string;
   effort?: "low" | "medium" | "high";
+  activeSidePanel?: "settings";
   claudeSessionId?: string;
+  onToggleSettings?: () => void;
   onModelChange?: (model: string) => void;
   onRestart?: (opts?: {
     model?: string;
@@ -29,7 +37,9 @@ export function SessionInfoBar({
   cwd,
   model,
   effort,
+  activeSidePanel,
   claudeSessionId,
+  onToggleSettings,
   onModelChange,
   onRestart,
   onRename,
@@ -129,6 +139,22 @@ export function SessionInfoBar({
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {onToggleSettings && (
+        <button
+          type="button"
+          onClick={onToggleSettings}
+          className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-semibold transition-colors ${
+            activeSidePanel === "settings"
+              ? "border-primary/40 bg-primary/10 text-primary"
+              : "border-border/50 bg-card text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          }`}
+          title="Toggle settings panel for this terminal"
+        >
+          <Settings className="w-3 h-3" />
+          Settings
+        </button>
+      )}
 
       {/* Model selector */}
       {onModelChange && (

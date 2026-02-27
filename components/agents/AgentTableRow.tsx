@@ -22,10 +22,14 @@ import {
 } from "lucide-react";
 import { AgentIcon } from "@/lib/agents/categories";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import { formatCost, formatTokens } from "@/lib/cost/calculator";
 import { cn } from "@/lib/utils";
-import { estimateTokensFromText } from "@/lib/marketplace/token-estimate";
+import {
+  estimateTokensFromText,
+  estimateWordsFromText,
+} from "@/lib/marketplace/token-estimate";
 import type { Agent } from "@/types/agent";
 import {
   getAgentModelDisplay,
@@ -40,6 +44,10 @@ interface AgentTableRowProps {
   onDelete: (agent: Agent) => void;
   onDuplicate?: (agent: Agent) => void;
   onToggleEnabled?: (agent: Agent) => void;
+  onContextMenu?: (
+    event: React.MouseEvent<HTMLTableRowElement>,
+    agent: Agent,
+  ) => void;
 }
 
 export function AgentTableRow({
@@ -50,10 +58,13 @@ export function AgentTableRow({
   onDelete,
   onDuplicate,
   onToggleEnabled,
+  onContextMenu,
 }: AgentTableRowProps) {
+  const router = useRouter();
   const isDisabled = agent.enabled === false;
   const promptText = agent.prompt ?? "";
   const tokenEstimate = estimateTokensFromText(promptText);
+  const wordEstimate = estimateWordsFromText(promptText);
   const modelInfo = getAgentModelDisplay(agent.model, agent.provider);
   const launchParams = new URLSearchParams({
     agent: agent.name,
@@ -73,6 +84,7 @@ export function AgentTableRow({
         isDisabled && "opacity-55",
       )}
       onClick={() => onEdit(agent)}
+      onContextMenu={(event) => onContextMenu?.(event, agent)}
     >
       {/* Checkbox */}
       {onToggleSelect && (
@@ -236,8 +248,21 @@ export function AgentTableRow({
       </td>
 
       {/* Token estimate */}
-      <td className="py-2 px-3 text-right tabular-nums text-muted-foreground">
-        {promptText.trim() ? formatTokens(tokenEstimate) : "-"}
+      <td
+        className="py-2 px-3 text-right tabular-nums text-muted-foreground"
+        title={
+          promptText.trim()
+            ? `~${wordEstimate.toLocaleString()} words in this agent prompt`
+            : undefined
+        }
+      >
+        {promptText.trim() ? (
+          <span className="cursor-help underline decoration-dotted underline-offset-2">
+            {formatTokens(tokenEstimate)}
+          </span>
+        ) : (
+          "-"
+        )}
       </td>
 
       {/* Runs */}
@@ -263,15 +288,14 @@ export function AgentTableRow({
           className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity justify-end"
           onClick={(e) => e.stopPropagation()}
         >
-          <Link href={launchHref}>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 text-success"
-            >
-              <Play size={11} />
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 p-0 text-success"
+            onClick={() => router.push(launchHref)}
+          >
+            <Play size={11} />
+          </Button>
           {onDuplicate && (
             <Button
               variant="ghost"

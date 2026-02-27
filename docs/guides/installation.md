@@ -16,13 +16,15 @@ git clone https://github.com/OptimiLabs/velocity.git
 cd velocity
 ```
 
-### 2. Install dependencies
+### 2. Install dependencies (optional preinstall)
 
 ```bash
 bun install
 ```
 
-This installs all Node.js dependencies including native modules like `node-pty` and `better-sqlite3`.
+`bun dev` can install these automatically, but running `bun install` first is
+useful if you want setup to complete before launching the dev server.
+Dependencies include native modules like `node-pty` and `better-sqlite3`.
 
 ### 3. Verify the installation
 
@@ -30,7 +32,7 @@ This installs all Node.js dependencies including native modules like `node-pty` 
 # Check that the build succeeds
 bun run build
 
-# Or start the development server directly
+# Or start the development server directly (auto-installs deps if needed)
 bun run dev
 ```
 

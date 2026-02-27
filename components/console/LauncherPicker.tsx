@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { useAgents } from "@/hooks/useAgents";
 import { useWorkflows } from "@/hooks/useWorkflows";
 import type { Agent } from "@/types/agent";
+import type { ConfigProvider } from "@/types/provider";
 
 interface LauncherPickerProps {
   mode: "workflow" | "agent";
@@ -23,6 +24,12 @@ interface LauncherPickerProps {
     prompt: string;
     model?: string;
     effort?: "low" | "medium" | "high";
+    provider?: ConfigProvider;
+    scope?: "global" | "project" | "workflow";
+    projectPath?: string;
+    skills?: string[];
+    tools?: string[];
+    disallowedTools?: string[];
   }) => void;
 }
 

@@ -52,7 +52,10 @@ import { useConfirm } from "@/hooks/useConfirm";
 import type { ConfigProvider } from "@/types/provider";
 import type { ToolInfo } from "@/hooks/useTools";
 import type { CustomSkill } from "@/lib/skills-shared";
-import { estimateTokensFromText } from "@/lib/marketplace/token-estimate";
+import {
+  estimateTokensFromText,
+  estimateWordsFromText,
+} from "@/lib/marketplace/token-estimate";
 import { formatTokens } from "@/lib/cost/calculator";
 
 interface SkillItem extends Omit<CustomSkill, "content"> {
@@ -78,6 +81,8 @@ interface SkillsTabProps {
 }
 
 const PAGE_SIZE = 25;
+const TOKEN_HINT =
+  "Estimated from skill text length (word-count proxy). This is not runtime usage tokens.";
 
 export function SkillsTab({
   pluginSkills,
@@ -695,7 +700,16 @@ export function SkillsTab({
                   </button>
                 </TableHead>
                 <TableHead className="h-8 px-2 sm:px-3 whitespace-nowrap text-right w-[80px]">
-                  Tokens
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help underline decoration-dotted underline-offset-2">
+                        Tokens
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-[18rem]">
+                      <p className="text-xs">{TOKEN_HINT}</p>
+                    </TooltipContent>
+                  </Tooltip>
                 </TableHead>
                 <TableHead className="h-8 px-2 sm:px-3 w-[70px] whitespace-nowrap" />
               </TableRow>
@@ -920,13 +934,23 @@ export function SkillsTab({
                         skill.description ??
                         "";
                       const tokens = estimateTokensFromText(baseText);
+                      const words = estimateWordsFromText(baseText);
                       if (!baseText.trim()) {
                         return <span className="text-xs text-muted-foreground">—</span>;
                       }
                       return (
-                        <span className="text-xs tabular-nums text-muted-foreground">
-                          {formatTokens(tokens)}
-                        </span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-xs tabular-nums text-muted-foreground cursor-help">
+                              {formatTokens(tokens)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" className="max-w-[18rem]">
+                            <p className="text-xs">
+                              ~{words.toLocaleString()} words in this skill file/text
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
                       );
                     })()}
                   </TableCell>

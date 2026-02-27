@@ -88,13 +88,32 @@ const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 260;
 export const SIDEBAR_COLLAPSED = 48;
 
-export function useSidebarResize(storageKey = "console-sidebar-width") {
+interface SidebarResizeOptions {
+  storageKey?: string;
+  minWidth?: number;
+  maxWidth?: number;
+  defaultWidth?: number;
+  collapsedWidth?: number;
+}
+
+export function useSidebarResize(
+  options: SidebarResizeOptions | string = {},
+) {
+  const normalizedOptions =
+    typeof options === "string" ? { storageKey: options } : options;
+  const {
+    storageKey = "console-sidebar-width",
+    minWidth = SIDEBAR_MIN,
+    maxWidth = SIDEBAR_MAX,
+    defaultWidth = SIDEBAR_DEFAULT,
+    collapsedWidth = SIDEBAR_COLLAPSED,
+  } = normalizedOptions;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const { width, handleDragStart } = useResizablePanel({
-    minWidth: SIDEBAR_MIN,
-    maxWidth: SIDEBAR_MAX,
-    defaultWidth: SIDEBAR_DEFAULT,
+    minWidth,
+    maxWidth,
+    defaultWidth,
     storageKey,
     side: "left",
   });
@@ -103,7 +122,7 @@ export function useSidebarResize(storageKey = "console-sidebar-width") {
     setSidebarCollapsed((prev) => !prev);
   }, []);
 
-  const effectiveSidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED : width;
+  const effectiveSidebarWidth = sidebarCollapsed ? collapsedWidth : width;
 
   return {
     sidebarWidth: effectiveSidebarWidth,

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
+import { resolveConsoleCwd } from "@/lib/console/cwd";
 import {
   Dialog,
   DialogContent,
@@ -145,7 +146,7 @@ export function ToolbarContextMenu({
             onClick={() => {
               useConsoleLayoutStore.getState().addTerminal(
                 {
-                  cwd: terminals[contextMenu.termId]?.cwd || "~",
+                  cwd: resolveConsoleCwd(terminals[contextMenu.termId]?.cwd),
                   sessionId: terminals[contextMenu.termId]?.sessionId,
                 },
                 "h",
@@ -161,7 +162,7 @@ export function ToolbarContextMenu({
             onClick={() => {
               useConsoleLayoutStore.getState().addTerminal(
                 {
-                  cwd: terminals[contextMenu.termId]?.cwd || "~",
+                  cwd: resolveConsoleCwd(terminals[contextMenu.termId]?.cwd),
                   sessionId: terminals[contextMenu.termId]?.sessionId,
                 },
                 "v",

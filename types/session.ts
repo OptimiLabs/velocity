@@ -43,6 +43,7 @@ export interface Session {
 export interface Project {
   id: string;
   path: string;
+  realPath?: string | null;
   name: string;
   session_count: number;
   total_tokens: number;

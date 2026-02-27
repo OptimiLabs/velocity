@@ -41,6 +41,7 @@ export interface NormalizedAgentArtifact {
   model?: string;
   effort?: "low" | "medium" | "high";
   tools?: string[];
+  disallowedTools?: string[];
   color?: string;
   category?: string;
   scope?: "global" | "project";
@@ -349,6 +350,9 @@ export function renderClaudeAgentMarkdown(agent: NormalizedAgentArtifact): strin
   if (agent.model) frontmatter.model = agent.model;
   if (agent.effort) frontmatter.effort = agent.effort;
   if (agent.tools?.length) frontmatter.tools = agent.tools.join(", ");
+  if (agent.disallowedTools?.length) {
+    frontmatter.disallowedTools = agent.disallowedTools.join(", ");
+  }
   if (agent.color) frontmatter.color = agent.color;
   if (agent.category) frontmatter.category = agent.category;
   if (agent.scope === "project" && agent.areaPath) {
@@ -367,6 +371,9 @@ function renderCodexAgentMarkdown(
   if (agent.model) frontmatter.model = agent.model;
   if (agent.effort) frontmatter.effort = agent.effort;
   if (agent.tools?.length) frontmatter.tools = agent.tools.join(", ");
+  if (agent.disallowedTools?.length) {
+    frontmatter.disallowedTools = agent.disallowedTools.join(", ");
+  }
   if (agent.color) frontmatter.color = agent.color;
   if (agent.category) frontmatter.category = agent.category;
   if (agent.areaPath) frontmatter.areaPath = agent.areaPath;
@@ -383,6 +390,9 @@ function renderGeminiAgentMarkdown(
   if (agent.model) frontmatter.model = agent.model;
   if (agent.effort) frontmatter.effort = agent.effort;
   if (agent.tools?.length) frontmatter.tools = agent.tools.join(", ");
+  if (agent.disallowedTools?.length) {
+    frontmatter.disallowedTools = agent.disallowedTools.join(", ");
+  }
   if (agent.color) frontmatter.color = agent.color;
   if (agent.category) frontmatter.category = agent.category;
   if (agent.areaPath) frontmatter.areaPath = agent.areaPath;
@@ -498,6 +508,7 @@ export function convertAgentTargets(
       if (agent.model) config.model = agent.model;
       if (agent.effort) config.effort = agent.effort;
       if (agent.tools) config.tools = agent.tools;
+      if (agent.disallowedTools) config.disallowedTools = agent.disallowedTools;
       if (agent.color) config.color = agent.color;
       if (agent.category) config.category = agent.category;
       if (agent.scope) config.scope = agent.scope;
@@ -532,6 +543,9 @@ export function convertAgentTargets(
           ...(agent.model ? { model: agent.model } : {}),
           ...(agent.effort ? { effort: agent.effort } : {}),
           ...(agent.tools ? { tools: agent.tools } : {}),
+          ...(agent.disallowedTools
+            ? { disallowedTools: agent.disallowedTools }
+            : {}),
           ...(agent.color ? { color: agent.color } : {}),
           ...(agent.category ? { category: agent.category } : {}),
           ...(agent.scope ? { scope: agent.scope } : {}),

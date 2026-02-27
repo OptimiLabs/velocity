@@ -28,6 +28,8 @@ import { cn } from "@/lib/utils";
 import type { MarketplaceItem } from "@/types/marketplace";
 
 type GroupedItems = { label: string; items: MarketplaceItem[] }[];
+const TOKEN_HINT =
+  "Estimated from repository file text length (word-count proxy). This is not runtime usage tokens.";
 
 interface PackageListProps {
   groups: GroupedItems;
@@ -104,7 +106,12 @@ function ListTable({
         <div className="flex-1 hidden md:block">Description</div>
         <div className="w-20 text-center hidden sm:block">Type</div>
         <div className="w-16 text-center hidden sm:block">Stars</div>
-        <div className="w-24 text-center hidden md:block">Tokens</div>
+        <div
+          className="w-24 text-center hidden md:block cursor-help underline decoration-dotted underline-offset-2"
+          title={TOKEN_HINT}
+        >
+          Tokens
+        </div>
         <div className="w-20 text-right hidden lg:block">Author</div>
         <div className="w-44 text-right">Action</div>
       </div>
@@ -237,7 +244,10 @@ function ListTable({
             {/* Token estimate */}
             <div className="w-24 text-center hidden md:block">
               {item.estimatedTokens ? (
-                <span className="text-xs text-muted-foreground font-mono">
+                <span
+                  className="text-xs text-muted-foreground font-mono cursor-help underline decoration-dotted underline-offset-2"
+                  title={TOKEN_HINT}
+                >
                   ~{item.estimatedTokens.toLocaleString()}
                 </span>
               ) : (

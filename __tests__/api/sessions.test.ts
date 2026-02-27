@@ -42,6 +42,8 @@ beforeAll(() => {
     SET model_usage = '{"claude-sonnet-4-5":{"inputTokens":120},"claude-opus-4-1":{"inputTokens":80}}'
     WHERE id = 's2';
 
+    UPDATE sessions SET cache_write_tokens = 300 WHERE id = 's2';
+
     UPDATE sessions SET effort_mode = 'xhigh' WHERE id = 's1';
     UPDATE sessions SET effort_mode = 'medium' WHERE id = 's2';
   `);
@@ -145,6 +147,19 @@ describe("Sessions API", () => {
       expect(ids).toEqual(["s1"]);
     });
 
+    it("includes cache read/write tokens in group-by-project totals", async () => {
+      const { GET } = await import("@/app/api/sessions/route");
+      const req = new Request(
+        "http://localhost/api/sessions?groupByProject=true",
+      );
+      const res = await GET(req);
+      const data = await res.json();
+
+      expect(Array.isArray(data.grouped)).toBe(true);
+      expect(data.grouped.length).toBe(1);
+      expect(Number(data.grouped[0].total_tokens)).toBe(10_000);
+    });
+
     it("excludes compressed sessions by default and supports compressionState filters", async () => {
       db.prepare("UPDATE sessions SET compressed_at = ? WHERE id = ?").run(
         "2026-02-25T00:00:00.000Z",
@@ -192,6 +207,7 @@ describe("Sessions API", () => {
       const compressData = await compressRes.json();
       expect(compressRes.status).toBe(200);
       expect(compressData.updated).toBe(2);
+      expect(compressData.projectAggregates?.activeOnly).toBe(true);
 
       const compressedCount = db
         .prepare(
@@ -199,6 +215,21 @@ describe("Sessions API", () => {
         )
         .get() as { c: number };
       expect(compressedCount.c).toBe(2);
+
+      const projectAfterCompress = db
+        .prepare(
+          "SELECT session_count, total_tokens, total_cost, last_activity_at FROM projects WHERE id = 'proj-1'",
+        )
+        .get() as {
+        session_count: number;
+        total_tokens: number;
+        total_cost: number;
+        last_activity_at: string | null;
+      };
+      expect(projectAfterCompress.session_count).toBe(0);
+      expect(projectAfterCompress.total_tokens).toBe(0);
+      expect(projectAfterCompress.total_cost).toBe(0);
+      expect(projectAfterCompress.last_activity_at).toBeNull();
 
       const restoreReq = new Request("http://localhost/api/sessions", {
         method: "PATCH",
@@ -216,6 +247,21 @@ describe("Sessions API", () => {
         )
         .get() as { c: number };
       expect(restoredCount.c).toBe(2);
+
+      const projectAfterRestore = db
+        .prepare(
+          "SELECT session_count, total_tokens, total_cost, last_activity_at FROM projects WHERE id = 'proj-1'",
+        )
+        .get() as {
+        session_count: number;
+        total_tokens: number;
+        total_cost: number;
+        last_activity_at: string | null;
+      };
+      expect(projectAfterRestore.session_count).toBe(2);
+      expect(projectAfterRestore.total_tokens).toBe(10_000);
+      expect(projectAfterRestore.total_cost).toBeCloseTo(0.3, 6);
+      expect(projectAfterRestore.last_activity_at).toBe("2025-01-02T12:00:00Z");
     });
 
     it("compresses sessions from a given date onward", async () => {
@@ -267,11 +313,28 @@ describe("Sessions API", () => {
         params: Promise.resolve({ id: "s1" }),
       });
       expect(compressRes.status).toBe(200);
+      const compressData = await compressRes.json();
+      expect(compressData.projectAggregates?.activeOnly).toBe(true);
 
       const compressed = db
         .prepare("SELECT compressed_at FROM sessions WHERE id = 's1'")
         .get() as { compressed_at: string | null };
       expect(compressed.compressed_at).toBeTruthy();
+
+      const projectAfterCompress = db
+        .prepare(
+          "SELECT session_count, total_tokens, total_cost, last_activity_at FROM projects WHERE id = 'proj-1'",
+        )
+        .get() as {
+        session_count: number;
+        total_tokens: number;
+        total_cost: number;
+        last_activity_at: string | null;
+      };
+      expect(projectAfterCompress.session_count).toBe(1);
+      expect(projectAfterCompress.total_tokens).toBe(8_300);
+      expect(projectAfterCompress.total_cost).toBeCloseTo(0.25, 6);
+      expect(projectAfterCompress.last_activity_at).toBe("2025-01-02T12:00:00Z");
 
       const restoreReq = new Request("http://localhost/api/sessions/s1", {
         method: "PATCH",
@@ -287,6 +350,21 @@ describe("Sessions API", () => {
         .prepare("SELECT compressed_at FROM sessions WHERE id = 's1'")
         .get() as { compressed_at: string | null };
       expect(restored.compressed_at).toBeNull();
+
+      const projectAfterRestore = db
+        .prepare(
+          "SELECT session_count, total_tokens, total_cost, last_activity_at FROM projects WHERE id = 'proj-1'",
+        )
+        .get() as {
+        session_count: number;
+        total_tokens: number;
+        total_cost: number;
+        last_activity_at: string | null;
+      };
+      expect(projectAfterRestore.session_count).toBe(2);
+      expect(projectAfterRestore.total_tokens).toBe(10_000);
+      expect(projectAfterRestore.total_cost).toBeCloseTo(0.3, 6);
+      expect(projectAfterRestore.last_activity_at).toBe("2025-01-02T12:00:00Z");
     });
   });
 });

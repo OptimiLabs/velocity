@@ -371,24 +371,30 @@ export function ModelProvidersCard({
               />
             </div>
           </div>
-          <div className="rounded-md border border-border/70 bg-muted/20 p-2.5 text-meta text-muted-foreground space-y-1.5">
-            <div className="flex items-start gap-1.5">
-              <Info size={12} className="mt-0.5 shrink-0" />
-              <span>
-                Claude sessions open a local terminal and execute the{" "}
-                <code>claude</code> command there.
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span>
-                Can be more expensive because they use the context tokens from
-                your local Claude session.
-              </span>
+            <div className="rounded-md border border-border/70 bg-muted/20 p-2.5 text-meta text-muted-foreground space-y-1.5">
+              <div className="flex items-start gap-1.5">
+                <Info size={12} className="mt-0.5 shrink-0" />
+                <span>
+                  Claude sessions open a local terminal and execute the{" "}
+                  <code>claude</code> command there.
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span>
+                  Can be more expensive because they use the context tokens from
+                  your local Claude session.
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span>
+                  To use Claude CLI, log in and authenticate it in Settings
+                  before enabling sessions.
+                </span>
+              </div>
             </div>
           </div>
-        </div>
-      ),
-    });
+        ),
+      });
 
     sections.push({
       key: "anthropic-key",
@@ -464,7 +470,8 @@ export function ModelProvidersCard({
             </div>
             <p className="text-meta text-muted-foreground">
               This controls whether Codex CLI is available for AI generation
-              runtime flows.
+              runtime flows. To use Codex CLI, log in and authenticate it in
+              Settings first.
             </p>
           </div>
         ),
@@ -544,7 +551,8 @@ export function ModelProvidersCard({
           </div>
           <p className="text-meta text-muted-foreground">
             This controls whether Gemini CLI is available for provider-specific
-            runtime flows.
+            runtime flows. To use Gemini CLI, log in and authenticate it in
+            Settings first.
           </p>
         </div>
       ),

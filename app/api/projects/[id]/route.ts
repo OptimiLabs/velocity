@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import path from "path";
 import { getDb } from "@/lib/db";
 import { jsonWithCache } from "@/lib/api/cache-headers";
 import { buildProviderFilter } from "@/lib/api/provider-filter";
+import { deriveProjectPath } from "@/lib/parser/indexer";
 
 export async function GET(
   request: Request,
@@ -13,10 +15,18 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const pAnd = buildProviderFilter(searchParams);
 
-  const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
+  const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as
+    | {
+        path: string;
+      }
+    | undefined;
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
+  const projectWithRealPath = {
+    ...project,
+    realPath: deriveProjectPath(path.basename(project.path)),
+  };
 
   const sessions = db
     .prepare(
@@ -74,5 +84,5 @@ export async function GET(
     }
   }
 
-  return jsonWithCache({ project, sessions, models }, "detail");
+  return jsonWithCache({ project: projectWithRealPath, sessions, models }, "detail");
 }

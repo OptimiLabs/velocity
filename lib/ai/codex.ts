@@ -1,5 +1,6 @@
 import * as pty from "node-pty";
 import { killProcess } from "@/lib/platform";
+import { spawnCliPty, writePromptAndEof } from "@/lib/ai/pty-runtime";
 
 type EffortLevel = "low" | "medium" | "high";
 
@@ -34,8 +35,7 @@ export async function codexOneShot(
 
     let term: pty.IPty;
     try {
-      term = pty.spawn("codex", args, {
-        name: "xterm-256color",
+      term = spawnCliPty("codex", args, {
         cols: 120,
         rows: 40,
         cwd: cwd || process.cwd(),
@@ -100,8 +100,7 @@ export async function codexOneShot(
     });
 
     try {
-      term.write(prompt);
-      term.write("\x04");
+      writePromptAndEof(term, prompt);
     } catch (err) {
       finish(() => {
         reject(err instanceof Error ? err : new Error(String(err)));

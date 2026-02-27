@@ -37,6 +37,7 @@ export interface ConsoleLayoutState {
 
   pinnedSessionIds: string[];
   activeSessionId: string | null;
+  tabbedSidePanel?: "context" | "settings";
 
   // Whether the context panel is open (global, drives injection on group switch)
   contextPanelOpen: boolean;
@@ -44,6 +45,10 @@ export interface ConsoleLayoutState {
   // Whether the paste history panel is open
   pasteHistoryOpen: boolean;
   setPasteHistoryOpen: (open: boolean) => void;
+
+  // Monotonic tick used to request re-focus of the active terminal.
+  focusRequestSeq: number;
+  requestActiveTerminalFocus: () => void;
 
   // Layout presets
   savedPresets: LayoutPreset[];
@@ -77,6 +82,7 @@ export interface ConsoleLayoutState {
   ) => void;
   consumePendingPrompt: (terminalId: string) => string | undefined;
   setActivePaneId: (paneId: PaneId | null) => void;
+  setTabbedSidePanel: (panel?: "context" | "settings") => void;
   setLayoutMode: (mode: LayoutMode) => void;
   setActiveSessionId: (id: string | null) => void;
 

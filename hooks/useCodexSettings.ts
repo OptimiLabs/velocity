@@ -4,10 +4,11 @@ import type { CodexSettingsEnvelope } from "@/lib/codex/settings-analysis";
 
 const CODEX_SETTINGS_KEY = ["settings", "codex"] as const;
 
-export function useCodexSettings() {
+export function useCodexSettings(enabled = true) {
   return useQuery({
     queryKey: CODEX_SETTINGS_KEY,
     refetchOnWindowFocus: false,
+    enabled,
     queryFn: async (): Promise<CodexSettingsEnvelope> => {
       const res = await fetch("/api/settings?provider=codex&includeMeta=1");
       if (!res.ok) throw new Error("Failed to fetch Codex settings");

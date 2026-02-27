@@ -269,6 +269,32 @@ describe("POST /api/agents/build (route)", () => {
     expect(data.status).toBe("valid");
   });
 
+  it("applies disallowedTools constraints and strips them from tool allow-list", async () => {
+    aiGenerateMock.mockResolvedValueOnce(
+      '{"name":"ops-helper","description":"Ops helper","prompt":"Do ops work","tools":["Read","Bash","Grep"]}',
+    );
+
+    const { POST } = await import("@/app/api/agents/build/route");
+    const req = new Request("http://localhost/api/agents/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: "Build an operations helper",
+        disallowedTools: ["Bash"],
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data.disallowedTools).toEqual(["Bash"]);
+    expect(data.tools).toEqual(["Read", "Grep"]);
+    const promptArg = aiGenerateMock.mock.calls.at(-1)?.[0] as string;
+    expect(promptArg).toContain("blocked these tools");
+    expect(promptArg).toContain('"Bash"');
+  });
+
   it("rejects invalid provider before calling AI", async () => {
     const { POST } = await import("@/app/api/agents/build/route");
     const req = new Request("http://localhost/api/agents/build", {

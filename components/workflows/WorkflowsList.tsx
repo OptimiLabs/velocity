@@ -490,9 +490,14 @@ export function WorkflowsList({ initialSearch }: WorkflowsListProps) {
 
                       {/* Updated */}
                       <td className="py-2 px-3 text-right text-muted-foreground">
-                        {formatDistanceToNow(new Date(wf.updatedAt), {
-                          addSuffix: true,
-                        })}
+                        <time
+                          suppressHydrationWarning
+                          dateTime={wf.updatedAt}
+                        >
+                          {formatDistanceToNow(new Date(wf.updatedAt), {
+                            addSuffix: true,
+                          })}
+                        </time>
                       </td>
 
                       {/* Actions */}

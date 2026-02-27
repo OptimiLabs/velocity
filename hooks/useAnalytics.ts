@@ -209,6 +209,7 @@ export interface RoleBreakdownRow {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export interface RoleDailyRow {
@@ -362,6 +363,7 @@ export interface ContextPreviewFile {
   content: string;
   tokenCount: number;
   isGlobal: boolean;
+  ingestionMode: "always" | "on-demand";
 }
 
 export interface ContextPreviewSection {
@@ -369,6 +371,10 @@ export interface ContextPreviewSection {
   label: string;
   files: ContextPreviewFile[];
   totalTokens: number;
+  runtimeTokens: number;
+  runtimeFiles: number;
+  optionalTokens: number;
+  optionalFiles: number;
 }
 
 export interface ContextPreviewData {
@@ -376,16 +382,35 @@ export interface ContextPreviewData {
   totals: {
     totalFiles: number;
     totalTokens: number;
+    runtimeFiles: number;
+    runtimeTokens: number;
+    runtimeEstimatedTokens: number;
+    runtimeBaseTokens: number;
+    runtimeSystemPromptTokens: number;
+    runtimeSystemToolsTokens: number;
+    runtimeBaseSource: "heuristic" | "none";
+    optionalFiles: number;
+    optionalTokens: number;
+    optionalGlobalTokens: number;
+    optionalProjectTokens: number;
+    indexedGlobalTokens: number;
+    indexedProjectTokens: number;
+    runtimeGlobalTokens: number;
+    runtimeProjectTokens: number;
     globalTokens: number;
     projectTokens: number;
   };
 }
 
-export function useContextPreview(projectId: string) {
+export function useContextPreview(
+  projectId: string,
+  provider?: ConfigProvider,
+) {
   return useQuery({
-    queryKey: ["context-preview", projectId],
+    queryKey: ["context-preview", projectId, provider ?? "claude"],
     queryFn: async (): Promise<ContextPreviewData> => {
       const params = new URLSearchParams({ projectId });
+      if (provider) params.set("provider", provider);
       const res = await fetch(`/api/context/preview?${params}`);
       if (!res.ok) throw new Error("Failed to fetch context preview");
       return res.json();
@@ -433,6 +458,8 @@ export interface InstructionContextData {
   projectBreakdown: InstructionContextProject[];
   totals: {
     totalInstructionFiles: number;
+    usedInstructionFiles: number;
+    usedInstructionTokens: number;
     avgTokensPerSession: number;
     totalSessions: number;
   };
@@ -534,6 +561,8 @@ export interface ProviderBreakdownRow {
   totalCost: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export interface ProviderDailyRow {

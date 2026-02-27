@@ -8,7 +8,7 @@ import { indexerLog } from "@/lib/logger";
 
 /** Bump this version whenever the aggregator output shape changes.
  *  Forces all sessions to be re-aggregated on the next rebuild/incremental run. */
-export const ENRICHMENT_VERSION = 13;
+export const ENRICHMENT_VERSION = 15;
 
 /** Number of sessions to process concurrently in each aggregation batch */
 export const BATCH_SIZE = 8;
@@ -103,6 +103,7 @@ export function prepareIndexStatements(db: Database.Database): IndexStatements {
       cache_write_tokens = ?,
       thinking_blocks = ?,
       total_cost = ?,
+      first_prompt = COALESCE(first_prompt, ?),
       tool_usage = ?,
       model_usage = ?,
       enriched_tools = ?,
@@ -118,6 +119,8 @@ export function prepareIndexStatements(db: Database.Database): IndexStatements {
       pricing_status = ?,
       unpriced_tokens = ?,
       unpriced_messages = ?,
+      git_branch = COALESCE(git_branch, ?),
+      project_path = COALESCE(project_path, ?),
       provider = ?,
       effort_mode = ?,
       billing_plan = COALESCE(billing_plan, ?)

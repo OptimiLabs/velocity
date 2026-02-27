@@ -15,6 +15,10 @@ interface ModelStats {
   unpricedTokens: number;
 }
 
+function numberOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 export async function GET(request: Request) {
   await ensureIndexed();
   const { searchParams } = new URL(request.url);
@@ -59,11 +63,21 @@ export async function GET(request: Request) {
         string,
         {
           inputTokens?: number;
+          input_tokens?: number;
           outputTokens?: number;
+          output_tokens?: number;
           reasoningTokens?: number;
           reasoning_output_tokens?: number;
           cacheReadTokens?: number;
+          cache_read_tokens?: number;
+          cacheReadInputTokens?: number;
+          cache_read_input_tokens?: number;
           cacheWriteTokens?: number;
+          cache_write_tokens?: number;
+          cacheWriteInputTokens?: number;
+          cache_write_input_tokens?: number;
+          cacheCreationInputTokens?: number;
+          cache_creation_input_tokens?: number;
           cost?: number;
           costUSD?: number;
           messageCount?: number;
@@ -79,6 +93,32 @@ export async function GET(request: Request) {
 
       for (const [model, stats] of Object.entries(usage)) {
         if (!stats || typeof stats !== "object") continue;
+        const inputTokens = numberOrZero(stats.inputTokens ?? stats.input_tokens);
+        const outputTokens = numberOrZero(
+          stats.outputTokens ?? stats.output_tokens,
+        );
+        const reasoningTokens = numberOrZero(
+          stats.reasoningTokens ?? stats.reasoning_output_tokens,
+        );
+        const cacheReadTokens = numberOrZero(
+          stats.cacheReadTokens ??
+            stats.cache_read_tokens ??
+            stats.cacheReadInputTokens ??
+            stats.cache_read_input_tokens,
+        );
+        const cacheWriteTokens = numberOrZero(
+          stats.cacheWriteTokens ??
+            stats.cache_write_tokens ??
+            stats.cacheWriteInputTokens ??
+            stats.cache_write_input_tokens ??
+            stats.cacheCreationInputTokens ??
+            stats.cache_creation_input_tokens,
+        );
+        const modelCost = numberOrZero(stats.costUSD ?? stats.cost);
+        const modelUnpricedTokens = numberOrZero(
+          stats.unpricedTokens ?? stats.unpriced_tokens,
+        );
+
         if (!models[model]) {
           models[model] = {
             inputTokens: 0,
@@ -92,20 +132,18 @@ export async function GET(request: Request) {
             unpricedTokens: 0,
           };
         }
-        models[model].inputTokens += stats.inputTokens || 0;
-        models[model].outputTokens += stats.outputTokens || 0;
-        models[model].reasoningTokens +=
-          stats.reasoningTokens || stats.reasoning_output_tokens || 0;
-        models[model].cacheReadTokens += stats.cacheReadTokens || 0;
-        models[model].cacheWriteTokens += stats.cacheWriteTokens || 0;
-        models[model].cost += stats.costUSD || stats.cost || 0;
+        models[model].inputTokens += inputTokens;
+        models[model].outputTokens += outputTokens;
+        models[model].reasoningTokens += reasoningTokens;
+        models[model].cacheReadTokens += cacheReadTokens;
+        models[model].cacheWriteTokens += cacheWriteTokens;
+        models[model].cost += modelCost;
         models[model].messageCount +=
           typeof stats.messageCount === "number"
             ? stats.messageCount
             : fallbackMessagesPerModel;
         models[model].sessionCount++;
-        models[model].unpricedTokens +=
-          stats.unpricedTokens || stats.unpriced_tokens || 0;
+        models[model].unpricedTokens += modelUnpricedTokens;
 
         if (includeRoleBreakdown && !role) {
           const roleMap = byRole[effectiveRole];
@@ -122,20 +160,18 @@ export async function GET(request: Request) {
               unpricedTokens: 0,
             };
           }
-          roleMap[model].inputTokens += stats.inputTokens || 0;
-          roleMap[model].outputTokens += stats.outputTokens || 0;
-          roleMap[model].reasoningTokens +=
-            stats.reasoningTokens || stats.reasoning_output_tokens || 0;
-          roleMap[model].cacheReadTokens += stats.cacheReadTokens || 0;
-          roleMap[model].cacheWriteTokens += stats.cacheWriteTokens || 0;
-          roleMap[model].cost += stats.costUSD || stats.cost || 0;
+          roleMap[model].inputTokens += inputTokens;
+          roleMap[model].outputTokens += outputTokens;
+          roleMap[model].reasoningTokens += reasoningTokens;
+          roleMap[model].cacheReadTokens += cacheReadTokens;
+          roleMap[model].cacheWriteTokens += cacheWriteTokens;
+          roleMap[model].cost += modelCost;
           roleMap[model].messageCount +=
             typeof stats.messageCount === "number"
               ? stats.messageCount
               : fallbackMessagesPerModel;
           roleMap[model].sessionCount++;
-          roleMap[model].unpricedTokens +=
-            stats.unpricedTokens || stats.unpriced_tokens || 0;
+          roleMap[model].unpricedTokens += modelUnpricedTokens;
         }
       }
     } catch {

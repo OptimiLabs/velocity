@@ -153,9 +153,9 @@ export function InstructionEditor({ file, onClose }: InstructionEditorProps) {
           </Button>
           {file.isEditable && (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
-              className="h-7 text-xs gap-1"
+              className="h-8 px-3 text-xs gap-1.5 font-medium"
               onClick={() => setShowAIPanel(!showAIPanel)}
             >
               <Wand2 size={12} />

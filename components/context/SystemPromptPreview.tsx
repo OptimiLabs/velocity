@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, type ReactNode } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import {
   useContextPreview,
   type ContextPreviewFile,
@@ -11,10 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatTokens } from "@/lib/cost/calculator";
 import { cn } from "@/lib/utils";
+import type { ConfigProvider } from "@/types/provider";
 import {
   Layers,
-  Globe,
-  FolderOpen,
   BookOpen,
   Brain,
   Sparkles,
@@ -27,6 +26,7 @@ import type { LucideIcon } from "lucide-react";
 
 interface SystemPromptPreviewProps {
   projectId: string;
+  provider?: ConfigProvider;
   headerLeft?: ReactNode;
 }
 
@@ -41,14 +41,41 @@ const DEFAULT_CONFIG = { icon: FileText, color: "bg-chart-5" };
 
 export function SystemPromptPreview({
   projectId,
+  provider,
   headerLeft,
 }: SystemPromptPreviewProps) {
-  const { data, isLoading } = useContextPreview(projectId);
+  const { data, isLoading } = useContextPreview(projectId, provider);
 
+  const [showOnDemand, setShowOnDemand] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+
+  const visibleSections = useMemo(() => {
+    if (!data?.sections?.length) return [];
+    return data.sections
+      .map((section) => {
+        const files = showOnDemand
+          ? section.files
+          : section.files.filter((file) => file.ingestionMode === "always");
+        if (files.length === 0) return null;
+        return {
+          ...section,
+          files,
+          totalTokens: files.reduce((sum, file) => sum + file.tokenCount, 0),
+        };
+      })
+      .filter((section): section is NonNullable<typeof section> => !!section);
+  }, [data?.sections, showOnDemand]);
+
+  useEffect(() => {
+    if (visibleSections.length === 0) return;
+    setExpandedSections((prev) => {
+      if (prev.size > 0) return prev;
+      return new Set([visibleSections[0]?.type ?? ""]);
+    });
+  }, [visibleSections]);
 
   function toggleSection(type: string) {
     setExpandedSections((prev) => {
@@ -70,23 +97,53 @@ export function SystemPromptPreview({
 
   const segments: BudgetSegment[] = useMemo(() => {
     if (!data) return [];
-    return data.sections.map((s) => {
-      const cfg = SECTION_CONFIG[s.type] ?? DEFAULT_CONFIG;
-      return {
-        label: s.label,
-        tokens: s.totalTokens,
-        color: cfg.color,
-        icon: cfg.icon,
-      };
-    });
-  }, [data]);
+    const runtimeSegments: BudgetSegment[] = [];
+
+    if (data.totals.runtimeSystemPromptTokens > 0) {
+      runtimeSegments.push({
+        label: "System Prompt (est.)",
+        tokens: data.totals.runtimeSystemPromptTokens,
+        color: "bg-chart-5",
+        icon: Layers,
+      });
+    }
+    if (data.totals.runtimeSystemToolsTokens > 0) {
+      runtimeSegments.push({
+        label: "System Tools (est.)",
+        tokens: data.totals.runtimeSystemToolsTokens,
+        color: "bg-chart-4",
+        icon: Bot,
+      });
+    }
+
+    const fileSegments = data.sections
+      .filter((s) => s.runtimeTokens > 0)
+      .map((s) => {
+        const cfg = SECTION_CONFIG[s.type] ?? DEFAULT_CONFIG;
+        const sectionLabel =
+          s.type === "CLAUDE.md"
+            ? provider === "gemini"
+              ? "GEMINI.md"
+              : provider === "codex"
+                ? "AGENTS.md"
+                : "CLAUDE.md"
+            : s.label;
+        return {
+          label: sectionLabel,
+          tokens: s.runtimeTokens,
+          color: cfg.color,
+          icon: cfg.icon,
+        };
+      });
+    return [...runtimeSegments, ...fileSegments];
+  }, [data, provider]);
 
   if (isLoading) {
     return (
       <div className="space-y-4">
         {headerLeft}
-        <div className="grid grid-cols-3 gap-3">
-          {Array.from({ length: 3 }).map((_, i) => (
+        <div className="grid grid-cols-2 gap-3">
+          {Array.from({ length: 2 }).map((_, i) => (
             <Skeleton key={i} className="h-20" />
           ))}
         </div>
@@ -99,6 +156,21 @@ export function SystemPromptPreview({
   const totals = data?.totals ?? {
     totalFiles: 0,
     totalTokens: 0,
+    runtimeFiles: 0,
+    runtimeTokens: 0,
+    runtimeEstimatedTokens: 0,
+    runtimeBaseTokens: 0,
+    runtimeSystemPromptTokens: 0,
+    runtimeSystemToolsTokens: 0,
+    runtimeBaseSource: "none" as const,
+    optionalFiles: 0,
+    optionalTokens: 0,
+    optionalGlobalTokens: 0,
+    optionalProjectTokens: 0,
+    indexedGlobalTokens: 0,
+    indexedProjectTokens: 0,
+    runtimeGlobalTokens: 0,
+    runtimeProjectTokens: 0,
     globalTokens: 0,
     projectTokens: 0,
   };
@@ -108,27 +180,43 @@ export function SystemPromptPreview({
       {headerLeft}
 
       {/* KPI Row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <KPICard
-          label="System Prompt"
-          value={formatTokens(totals.totalTokens)}
+          label="Runtime Prompt"
+          value={formatTokens(totals.runtimeEstimatedTokens)}
           icon={Layers}
           color="text-primary"
-          subtitle={`${totals.totalFiles} files`}
+          subtitle={`${totals.runtimeFiles} entrypoint files`}
         />
         <KPICard
-          label="Global Context"
-          value={formatTokens(totals.globalTokens)}
-          icon={Globe}
-          color="text-chart-1"
-        />
-        <KPICard
-          label="Project Context"
-          value={formatTokens(totals.projectTokens)}
-          icon={FolderOpen}
+          label="Indexed Instructions"
+          value={totals.totalFiles.toLocaleString()}
+          icon={BookOpen}
           color="text-chart-2"
+          subtitle={`${formatTokens(totals.totalTokens)} tokens indexed`}
         />
       </div>
+
+      {(totals.totalTokens > 0 || totals.runtimeEstimatedTokens > 0) && (
+        <Card>
+          <CardContent className="py-3 px-5 text-xs text-muted-foreground space-y-1">
+            <p>
+              Runtime prompt estimate includes indexed entrypoint files.
+              Provider base/system token estimates are not included.
+            </p>
+            <p>
+              Runtime global instructions: {formatTokens(totals.runtimeGlobalTokens)} |
+              Runtime project instructions: {formatTokens(totals.runtimeProjectTokens)}
+            </p>
+            {totals.optionalTokens > 0 && (
+              <p>
+                On-demand indexed (not auto-loaded):{" "}
+                {formatTokens(totals.optionalTokens)}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Budget Bar */}
       {segments.length > 0 && (
@@ -146,12 +234,40 @@ export function SystemPromptPreview({
             <FileText size={14} />
             Instruction Files
           </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Runtime entrypoint files are shown by default. Toggle to inspect
+            on-demand indexed files.
+          </p>
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => setShowOnDemand((prev) => !prev)}
+              className={cn(
+                "rounded-md border px-2 py-1 text-xs transition-colors",
+                showOnDemand
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border/60 bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {showOnDemand
+                ? "Hide On-Demand Files"
+                : "Show On-Demand Files"}
+            </button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-1">
-          {data?.sections.map((section) => {
+          {visibleSections.map((section) => {
             const cfg = SECTION_CONFIG[section.type] ?? DEFAULT_CONFIG;
             const SectionIcon = cfg.icon;
             const isSectionExpanded = expandedSections.has(section.type);
+            const sectionLabel =
+              section.type === "CLAUDE.md"
+                ? provider === "gemini"
+                  ? "GEMINI.md"
+                  : provider === "codex"
+                    ? "AGENTS.md"
+                    : "CLAUDE.md"
+                : section.label;
 
             return (
               <div
@@ -176,7 +292,7 @@ export function SystemPromptPreview({
                       size={11}
                       className="shrink-0 text-muted-foreground/60"
                     />
-                    <span className="font-medium">{section.label}</span>
+                    <span className="font-medium">{sectionLabel}</span>
                     <span className="ml-auto flex items-center gap-3 shrink-0 text-muted-foreground tabular-nums">
                       <span>{formatTokens(section.totalTokens)}</span>
                       <span className="text-muted-foreground/50">
@@ -205,12 +321,18 @@ export function SystemPromptPreview({
             );
           })}
 
-          {(!data || data.sections.length === 0) && (
+          {visibleSections.length === 0 && (
             <div className="flex flex-col items-center justify-center py-8 text-center text-sm text-muted-foreground">
               <Hash size={24} className="mb-3 text-muted-foreground/50" />
-              <p>No instruction files found for this project.</p>
+              <p>
+                {showOnDemand
+                  ? "No instruction files found for this project."
+                  : "No runtime instruction files detected for this project."}
+              </p>
               <p className="text-xs mt-1">
-                Select a different project to preview its system prompt.
+                {showOnDemand
+                  ? "Select a different project to preview its system prompt."
+                  : "Enable on-demand files to inspect indexed knowledge and skills."}
               </p>
             </div>
           )}

@@ -2,11 +2,9 @@
 
 import { useMemo, useState, useEffect } from "react";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
-import { collectLeaves, findNode } from "@/lib/console/pane-tree";
+import { collectLeaves } from "@/lib/console/pane-tree";
 import {
   Terminal,
-  Settings,
-  BookOpen,
   Plus,
   X,
   SquareStack,
@@ -131,22 +129,6 @@ export function LayoutToolbar({
   const overflowTabs = allTabs.length > MAX_VISIBLE_TABS
     ? allTabs.slice(MAX_VISIBLE_TABS)
     : [];
-
-  const settingsLeaf = useMemo(
-    () => leaves.find((l) => l.content.type === "settings"),
-    [leaves],
-  );
-  const contextLeaf = useMemo(
-    () => leaves.find((l) => l.content.type === "context"),
-    [leaves],
-  );
-
-  // Determine what's active
-  const activeLeaf = activePaneId ? findNode(paneTree, activePaneId) : null;
-  const isSettingsActive =
-    activeLeaf?.kind === "leaf" && activeLeaf.content.type === "settings";
-  const isContextActive =
-    activeLeaf?.kind === "leaf" && activeLeaf.content.type === "context";
 
   return (
     <div className="flex items-center h-7 px-1 border-b border-border/50 bg-card/30 shrink-0 gap-0.5 overflow-x-auto relative z-10 min-w-0">
@@ -374,46 +356,6 @@ export function LayoutToolbar({
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Context tab */}
-      <button
-        onClick={() => {
-          if (contextLeaf) {
-            setActivePaneId(contextLeaf.id);
-          } else {
-            useConsoleLayoutStore.getState().setActiveTab("context");
-          }
-        }}
-        title="Context"
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-t text-xs font-medium transition-colors whitespace-nowrap ${
-          isContextActive
-            ? "bg-primary/25 text-primary border-b-2 border-primary shadow-[inset_0_-2px_0_0] shadow-primary"
-            : "text-muted-foreground hover:text-foreground hover:bg-muted/50 border-b-2 border-transparent"
-        }`}
-      >
-        <BookOpen className="w-3 h-3" />
-        Context
-      </button>
-
-      {/* Settings tab */}
-      <button
-        onClick={() => {
-          if (settingsLeaf) {
-            setActivePaneId(settingsLeaf.id);
-          } else {
-            useConsoleLayoutStore.getState().setActiveTab("settings");
-          }
-        }}
-        title="Settings"
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-t text-xs font-medium transition-colors whitespace-nowrap ${
-          isSettingsActive
-            ? "bg-primary/25 text-primary border-b-2 border-primary shadow-[inset_0_-2px_0_0] shadow-primary"
-            : "text-muted-foreground hover:text-foreground hover:bg-muted/50 border-b-2 border-transparent"
-        }`}
-      >
-        <Settings className="w-3 h-3" />
-        Settings
-      </button>
 
       {/* Layout mode toggles */}
       <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-border/50">

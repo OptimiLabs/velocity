@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { useProjects, useContextBreakdown } from "@/hooks/useAnalytics";
-import type { ContextBreakdownCategory } from "@/hooks/useAnalytics";
+import { useProjects } from "@/hooks/useAnalytics";
 import { useSessionContext } from "@/hooks/useSessionContext";
 import { SystemPromptPreview } from "@/components/context/SystemPromptPreview";
+import { useConsole } from "@/components/providers/ConsoleProvider";
 import { useProviderScopeStore } from "@/stores/providerScopeStore";
+import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import {
   Select,
   SelectContent,
@@ -15,28 +16,31 @@ import {
 } from "@/components/ui/select";
 import {
   BookOpen,
-  ChevronDown,
-  ChevronRight,
   GitBranch,
-  Gauge,
   Zap,
   BarChart3,
-  Server,
-  Wrench,
-  Plug,
-  Bot,
-  FileText,
-  Sparkles,
-  MessageSquare,
-  Archive,
 } from "lucide-react";
 import type { ConsoleSession } from "@/types/console";
-import type { LucideIcon } from "lucide-react";
-import { AUTOCOMPACT_RATIO } from "@/lib/console/constants";
+import type { ConfigProvider } from "@/types/provider";
+import {
+  inferProviderFromCommand,
+  inferProviderFromModel,
+} from "@/lib/console/cli-launch";
+import type { Project } from "@/types/session";
 
 interface ContextPanelProps {
   session?: ConsoleSession | null;
+  terminalId?: string;
 }
+
+const PROVIDER_OPTIONS: ReadonlyArray<{
+  value: ConfigProvider;
+  label: string;
+}> = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+  { value: "gemini", label: "Gemini" },
+];
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -49,52 +53,127 @@ function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function getFillTextColor(pct: number): string {
-  if (pct > 85) return "text-red-400 dark:text-red-300";
-  if (pct > 60) return "text-amber-400 dark:text-amber-300";
-  return "text-emerald-400 dark:text-emerald-300";
+function shortenCwd(cwd: string): string {
+  if (!cwd) return cwd;
+  const normalized = cwd.replace(/\\/g, "/");
+  if (normalized.includes("/.claude/projects/")) {
+    return "~/.claude/projects/<session-store>";
+  }
+  if (/^[A-Za-z]:\\Users\\/.test(cwd)) {
+    return cwd.replace(/^[A-Za-z]:\\Users\\[^\\]+/, "~");
+  }
+  return cwd.replace(/^\/Users\/[^/]+/, "~");
 }
 
-// ── Segment color + icon mapping ────────────────────────────────
+function getProjectRootPath(project: Project): string | null {
+  if (typeof project.realPath === "string" && project.realPath.trim()) {
+    return project.realPath.trim();
+  }
+  if (typeof project.path === "string" && project.path.trim()) {
+    const raw = project.path.trim();
+    const normalized = raw.replace(/\\/g, "/");
+    // Ignore Claude's internal transcript store paths for project matching.
+    if (!normalized.includes("/.claude/projects/")) return raw;
+  }
+  return null;
+}
 
-const CATEGORY_META: Record<string, { color: string; icon: LucideIcon }> = {
-  system_prompt: { color: "bg-slate-500", icon: Server },
-  system_tools: { color: "bg-blue-500", icon: Wrench },
-  mcp_tools: { color: "bg-violet-500", icon: Plug },
-  agents: { color: "bg-purple-500", icon: Bot },
-  memory: { color: "bg-orange-500", icon: FileText },
-  skills: { color: "bg-yellow-500", icon: Sparkles },
-  messages: { color: "bg-emerald-500", icon: MessageSquare },
-  autocompact: { color: "bg-muted/60", icon: Archive },
-};
-
-export function ContextPanel({ session }: ContextPanelProps) {
+export function ContextPanel({ session, terminalId }: ContextPanelProps) {
+  const { sessions, activeSession } = useConsole();
   const providerScope = useProviderScopeStore((s) => s.providerScope);
-  const ctx = useSessionContext(session?.id ?? null);
-  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const terminals = useConsoleLayoutStore((s) => s.terminals);
+  const fallbackSessionId = session?.id ?? null;
+  const targetTerminalId = terminalId ?? session?.terminalId ?? null;
+  const targetTerminalMeta = useMemo(() => {
+    if (targetTerminalId && terminals[targetTerminalId]) {
+      return terminals[targetTerminalId];
+    }
+    if (!fallbackSessionId) return undefined;
+    return Object.values(terminals).find((meta) => meta.sessionId === fallbackSessionId);
+  }, [fallbackSessionId, targetTerminalId, terminals]);
+  const targetSession = useMemo(() => {
+    const metaSessionId = targetTerminalMeta?.sessionId;
+    if (metaSessionId && sessions.has(metaSessionId)) {
+      return sessions.get(metaSessionId) ?? null;
+    }
+    if (fallbackSessionId && sessions.has(fallbackSessionId)) {
+      return sessions.get(fallbackSessionId) ?? session ?? null;
+    }
+    return session ?? activeSession ?? null;
+  }, [
+    activeSession,
+    fallbackSessionId,
+    session,
+    sessions,
+    targetTerminalMeta?.sessionId,
+  ]);
+  const ctx = useSessionContext(targetSession?.id ?? null);
   const [projectId, setProjectId] = useState<string>("");
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(),
-  );
-  const { data: projects } = useProjects();
+  const [previewProvider, setPreviewProvider] =
+    useState<ConfigProvider>(providerScope);
+  const { data: projects, refetch: refetchProjects } = useProjects();
 
-  // Reset project selection when switching sessions
+  // Keep project selection anchored to the active terminal folder/session.
   useEffect(() => {
     setProjectId("");
-  }, [session?.id]);
+  }, [activeSession?.id, activeSession?.cwd, targetSession?.id, targetTerminalMeta?.cwd]);
 
-  const effectiveProjectId =
-    projectId || (projects && projects.length > 0 ? projects[0].id : "");
+  // Pull latest projects so instruction preview follows indexer/background updates.
+  useEffect(() => {
+    if (!targetTerminalMeta?.cwd && !targetSession?.cwd) return;
+    void refetchProjects();
+  }, [refetchProjects, targetSession?.cwd, targetTerminalMeta?.cwd]);
 
-  const { data: breakdown } = useContextBreakdown(
-    effectiveProjectId,
-    providerScope,
-  );
+  const sessionCommand = useMemo(() => {
+    const pieces = [
+      targetTerminalMeta?.command ?? "",
+      ...(targetTerminalMeta?.args ?? []),
+    ];
+    return pieces.join(" ").trim();
+  }, [targetTerminalMeta?.args, targetTerminalMeta?.command]);
+  const activeCwd = targetTerminalMeta?.cwd ?? targetSession?.cwd ?? null;
+  const runtimeModel =
+    ctx.model ?? targetTerminalMeta?.model ?? targetSession?.model ?? null;
+  const runtimeProvider = useMemo<ConfigProvider | null>(() => {
+    if (targetSession?.provider) return targetSession.provider;
+    const providerFromCommand = inferProviderFromCommand(sessionCommand);
+    if (providerFromCommand) return providerFromCommand;
+    const providerFromModel = inferProviderFromModel(runtimeModel);
+    if (providerFromModel) return providerFromModel;
+    return null;
+  }, [runtimeModel, sessionCommand, targetSession?.provider]);
+  const runtimeModelProvider = inferProviderFromModel(runtimeModel);
+  const showRuntimeModel =
+    !!runtimeModel &&
+    (!runtimeProvider ||
+      !runtimeModelProvider ||
+      runtimeModelProvider === runtimeProvider);
 
-  const fillPct = useMemo(() => {
-    if (!ctx.contextWindow || !ctx.lastTurnInputTokens) return 0;
-    return Math.min(100, (ctx.lastTurnInputTokens / ctx.contextWindow) * 100);
-  }, [ctx.lastTurnInputTokens, ctx.contextWindow]);
+  useEffect(() => {
+    setPreviewProvider(runtimeProvider ?? providerScope);
+  }, [runtimeProvider, providerScope, targetSession?.id, targetTerminalId]);
+  const effectiveProvider = previewProvider;
+  const sessionProjectId = useMemo(() => {
+    if (!projects || projects.length === 0) return "";
+    const currentCwd = activeCwd;
+    if (!currentCwd) return "";
+    const cwd = currentCwd.replace(/\\/g, "/");
+    let bestMatch: (typeof projects)[number] | null = null;
+    let bestMatchPathLength = -1;
+    for (const project of projects) {
+      const projectRoot = getProjectRootPath(project);
+      if (!projectRoot) continue;
+      const projectPath = projectRoot.replace(/\\/g, "/");
+      if (cwd === projectPath || cwd.startsWith(`${projectPath}/`)) {
+        if (!bestMatch || projectPath.length > bestMatchPathLength) {
+          bestMatch = project;
+          bestMatchPathLength = projectPath.length;
+        }
+      }
+    }
+    return bestMatch?.id ?? "";
+  }, [activeCwd, projects]);
+  const effectiveProjectId = projectId || sessionProjectId;
 
   const cacheHitRate = useMemo(() => {
     const total = ctx.turnCacheReadTokens + ctx.turnInputTokens;
@@ -110,102 +189,15 @@ export function ContextPanel({ session }: ContextPanelProps) {
   }, [ctx.totalInputTokens, ctx.totalOutputTokens, ctx.turnCount]);
 
   const hasData = ctx.turnCount > 0;
-  const hasTurn = ctx.lastTurnInputTokens > 0;
-
-  // ── Compute segments ────────────────────────────────────────────
-  const segments = useMemo(() => {
-    const cw = ctx.contextWindow;
-    if (!cw) return [];
-
-    const staticTotal = breakdown?.staticTotal ?? 0;
-    const autocompactBuffer = Math.round(cw * AUTOCOMPACT_RATIO);
-    const messagesTokens = hasTurn
-      ? Math.max(0, ctx.lastTurnInputTokens - staticTotal)
-      : 0;
-    const usedTotal = hasTurn
-      ? ctx.lastTurnInputTokens + autocompactBuffer
-      : staticTotal;
-    const freeSpace = Math.max(0, cw - usedTotal);
-
-    const result: {
-      key: string;
-      label: string;
-      tokens: number;
-      pct: number;
-      color: string;
-      icon: LucideIcon;
-      items?: ContextBreakdownCategory["items"];
-    }[] = [];
-
-    // Static categories from breakdown
-    if (breakdown) {
-      for (const cat of breakdown.categories) {
-        if (cat.tokens === 0) continue;
-        const meta = CATEGORY_META[cat.key];
-        result.push({
-          key: cat.key,
-          label: cat.label,
-          tokens: cat.tokens,
-          pct: (cat.tokens / cw) * 100,
-          color: meta?.color ?? "bg-gray-500",
-          icon: meta?.icon ?? FileText,
-          items: cat.items,
-        });
-      }
-    }
-
-    // Messages (only after first turn)
-    if (hasTurn && messagesTokens > 0) {
-      result.push({
-        key: "messages",
-        label: "Messages",
-        tokens: messagesTokens,
-        pct: (messagesTokens / cw) * 100,
-        color: CATEGORY_META.messages.color,
-        icon: CATEGORY_META.messages.icon,
-      });
-    }
-
-    // Autocompact buffer (only show after first turn when we have real data)
-    if (hasTurn) {
-      result.push({
-        key: "autocompact",
-        label: "Autocompact Buffer",
-        tokens: autocompactBuffer,
-        pct: (autocompactBuffer / cw) * 100,
-        color: CATEGORY_META.autocompact.color,
-        icon: CATEGORY_META.autocompact.icon,
-      });
-    }
-
-    // Free space
-    if (freeSpace > 0) {
-      result.push({
-        key: "free",
-        label: "Free Space",
-        tokens: freeSpace,
-        pct: (freeSpace / cw) * 100,
-        color: "bg-muted/20",
-        icon: Gauge,
-      });
-    }
-
-    return result;
-  }, [breakdown, ctx.contextWindow, ctx.lastTurnInputTokens, hasTurn]);
-
-  const toggleCategory = (key: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   const modelLabel =
-    ctx.model?.replace("claude-", "").replace(/-\d{8}$/, "") ??
-    session?.model?.replace("claude-", "").replace(/-\d{8}$/, "") ??
-    null;
+    showRuntimeModel && runtimeModel
+      ? runtimeModel.replace(/-\d{8}$/, "")
+      : null;
+  const runtimeProviderLabel = runtimeProvider
+    ? PROVIDER_OPTIONS.find((option) => option.value === runtimeProvider)?.label ??
+      runtimeProvider
+    : null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -213,9 +205,14 @@ export function ContextPanel({ session }: ContextPanelProps) {
       <div className="shrink-0 px-3 py-2.5 border-b border-border/50 bg-card/50">
         <div className="flex items-center gap-1.5">
           <BookOpen className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="text-xs font-semibold text-foreground">Context</span>
-          {modelLabel && (
+          <span className="text-xs font-semibold text-foreground">Runtime</span>
+          {runtimeProviderLabel && (
             <span className="ml-1.5 px-1.5 py-0.5 rounded bg-muted/50 text-[10px] font-medium text-muted-foreground">
+              {runtimeProviderLabel}
+            </span>
+          )}
+          {modelLabel && (
+            <span className="px-1.5 py-0.5 rounded bg-muted/50 text-[10px] font-medium text-muted-foreground">
               {modelLabel}
             </span>
           )}
@@ -225,143 +222,23 @@ export function ContextPanel({ session }: ContextPanelProps) {
             </span>
           )}
         </div>
+        <div className="mt-1 text-[10px] font-mono text-muted-foreground truncate">
+          {activeCwd ? shortenCwd(activeCwd) : "No folder detected"}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Section A — Context Window Breakdown */}
-        <div className="px-3 py-3 border-b border-border/30">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Gauge className="w-3 h-3 text-muted-foreground" />
-            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-              {hasTurn ? "Context Window" : "Estimated Context Budget"}
-            </span>
-          </div>
-
-          {/* Segmented bar */}
-          <div className="h-2.5 rounded-full bg-muted/20 overflow-hidden mb-1.5 flex">
-            {segments.map((seg) =>
-              seg.pct > 0.1 ? (
-                <div
-                  key={seg.key}
-                  className={`h-full transition-all duration-500 first:rounded-l-full last:rounded-r-full ${seg.color}`}
-                  style={{ width: `${seg.pct}%` }}
-                  title={`${seg.label}: ${formatTokens(seg.tokens)} (${seg.pct.toFixed(1)}%)`}
-                />
-              ) : null,
-            )}
-          </div>
-
-          {/* Summary line */}
-          <div className="flex items-baseline justify-between mb-2">
-            {hasTurn ? (
-              <>
-                <span className="text-xs font-mono text-foreground/80">
-                  {formatTokens(ctx.lastTurnInputTokens)}{" "}
-                  <span className="text-muted-foreground">
-                    / {formatTokens(ctx.contextWindow)}
-                  </span>
-                </span>
-                <span
-                  className={`text-xs font-semibold font-mono ${getFillTextColor(fillPct)}`}
-                >
-                  {fillPct.toFixed(1)}%
-                </span>
-              </>
-            ) : (
-              <span className="text-xs font-mono text-muted-foreground">
-                {formatTokens(breakdown?.staticTotal ?? 0)} static overhead
-                <span className="text-muted-foreground/60">
-                  {" "}
-                  / {formatTokens(ctx.contextWindow)}
-                </span>
-              </span>
-            )}
-          </div>
-
-          {/* Context budget alert */}
-          {fillPct > 80 && (
-            <div className="flex items-center gap-1.5 px-2 py-1.5 mb-2 rounded-md bg-amber-500/10 border border-amber-500/20">
-              <Gauge className="w-3 h-3 text-amber-400 shrink-0" />
-              <span className="text-[10px] text-amber-400 font-medium">
-                Approaching context limit — consider /compact
-              </span>
+        {!hasData && (
+          <div className="px-3 py-3 border-b border-border/30">
+            <div className="text-[10px] text-muted-foreground">
+              Runtime metrics will populate as this terminal emits usage updates.
             </div>
-          )}
-
-          {/* Category drill-downs */}
-          <div className="space-y-0.5">
-            {segments
-              .filter((seg) => seg.key !== "free")
-              .map((seg) => {
-                const hasItems =
-                  seg.items &&
-                  seg.items.length > 0 &&
-                  seg.key !== "autocompact";
-                const isExpanded = expandedCategories.has(seg.key);
-                const Icon = seg.icon;
-
-                return (
-                  <div key={seg.key}>
-                    <button
-                      onClick={() => hasItems && toggleCategory(seg.key)}
-                      className={`flex items-center gap-1.5 w-full py-1 text-left rounded-sm ${
-                        hasItems
-                          ? "hover:bg-muted/30 cursor-pointer"
-                          : "cursor-default"
-                      } transition-colors`}
-                    >
-                      {hasItems ? (
-                        isExpanded ? (
-                          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
-                        ) : (
-                          <ChevronRight className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
-                        )
-                      ) : (
-                        <span className="w-2.5 shrink-0" />
-                      )}
-                      <span
-                        className={`w-2 h-2 rounded-[2px] shrink-0 ${seg.color}`}
-                      />
-                      <Icon className="w-3 h-3 text-muted-foreground shrink-0" />
-                      <span className="text-[10px] text-foreground/80 truncate">
-                        {seg.label}
-                      </span>
-                      <span className="ml-auto text-[10px] font-mono text-muted-foreground shrink-0">
-                        {formatTokens(seg.tokens)}
-                      </span>
-                      <span className="text-[10px] font-mono text-muted-foreground/60 w-10 text-right shrink-0">
-                        {seg.pct.toFixed(1)}%
-                      </span>
-                    </button>
-
-                    {/* Expanded items */}
-                    {hasItems && isExpanded && (
-                      <div className="ml-[22px] border-l border-border/30 pl-2 mb-1">
-                        {seg.items!.map((item, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-1.5 py-0.5"
-                          >
-                            <Icon className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
-                            <span className="text-[10px] text-muted-foreground truncate flex-1">
-                              {item.name}
-                            </span>
-                            <span className="text-[10px] font-mono text-muted-foreground/80 shrink-0">
-                              {formatTokens(item.tokens)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
           </div>
-        </div>
+        )}
 
         {hasData && (
           <div className="space-y-0">
-            {/* Section B — Latest Turn */}
+            {/* Section A — Latest Turn */}
             <div className="px-3 py-3 border-b border-border/30">
               <div className="flex items-center gap-1.5 mb-2">
                 <Zap className="w-3 h-3 text-muted-foreground" />
@@ -408,7 +285,7 @@ export function ContextPanel({ session }: ContextPanelProps) {
               </div>
             </div>
 
-            {/* Section C — Session Totals */}
+            {/* Section B — Session Totals */}
             <div className="px-3 py-3 border-b border-border/30">
               <div className="flex items-center gap-1.5 mb-2">
                 <BarChart3 className="w-3 h-3 text-muted-foreground" />
@@ -432,7 +309,7 @@ export function ContextPanel({ session }: ContextPanelProps) {
               </div>
             </div>
 
-            {/* Section D — Git Context */}
+            {/* Section C — Git Context */}
             {ctx.gitBranch && (
               <div className="px-3 py-3 border-b border-border/30">
                 <div className="flex items-center gap-1.5 mb-1.5">
@@ -461,23 +338,40 @@ export function ContextPanel({ session }: ContextPanelProps) {
           </div>
         )}
 
-        {/* Section E — Instruction Files (collapsible) */}
+        {/* Section D — Instruction Files */}
         <div className="border-t border-border/30">
-          <button
-            onClick={() => setInstructionsOpen((o) => !o)}
-            className="flex items-center gap-1.5 w-full px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
-          >
-            {instructionsOpen ? (
-              <ChevronDown className="w-3 h-3 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="w-3 h-3 text-muted-foreground" />
-            )}
+          <div className="flex items-center gap-1.5 w-full px-3 py-2.5 text-left border-b border-border/30">
             <BookOpen className="w-3 h-3 text-muted-foreground" />
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
               Instruction Files
             </span>
-            {projects && projects.length > 0 && instructionsOpen && (
-              <div className="ml-auto">
+            {activeCwd && (
+              <span
+                className="max-w-[180px] truncate rounded bg-muted/40 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground"
+                title={activeCwd}
+              >
+                {shortenCwd(activeCwd)}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <div className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/70 p-0.5">
+                {PROVIDER_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setPreviewProvider(option.value)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                      effectiveProvider === option.value
+                        ? "bg-primary/15 text-primary"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                    title={`Show ${option.label} instruction context`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {projects && projects.length > 0 && (
                 <Select value={effectiveProjectId} onValueChange={setProjectId}>
                   <SelectTrigger className="h-6 w-auto min-w-[140px] text-[10px] gap-1">
                     <SelectValue placeholder="Select project" />
@@ -490,11 +384,18 @@ export function ContextPanel({ session }: ContextPanelProps) {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            )}
-          </button>
-          {instructionsOpen && (
-            <SystemPromptPreview projectId={effectiveProjectId} />
+              )}
+            </div>
+          </div>
+          {effectiveProjectId ? (
+            <SystemPromptPreview
+              projectId={effectiveProjectId}
+              provider={effectiveProvider}
+            />
+          ) : (
+            <div className="px-3 py-3 text-xs text-muted-foreground">
+              No project detected for this session yet.
+            </div>
           )}
         </div>
       </div>

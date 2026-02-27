@@ -84,52 +84,29 @@ export function MultiSessionTiling({
     );
   }
 
-  // 2+ sessions: first on left (50%), rest stacked vertically on right (50%)
-  const [firstId, ...restIds] = validPinned;
-  const firstSession = sessions.get(firstId)!;
-
   return (
     <div className="h-full p-0.5">
-      <Group orientation="horizontal" id="multi-session-root">
-        <Panel defaultSize={50} minSize={20}>
-          <SessionPane
-            session={firstSession}
-            wsRef={wsRef}
-            wsVersion={wsVersion}
-            onUnpin={() => onUnpin(firstId)}
-          />
-        </Panel>
-        <Separator className="w-1 bg-border/30 hover:bg-primary/30 transition-colors cursor-col-resize" />
-        <Panel defaultSize={50} minSize={20}>
-          {restIds.length === 1 ? (
-            <SessionPane
-              session={sessions.get(restIds[0])!}
-              wsRef={wsRef}
-              wsVersion={wsVersion}
-              onUnpin={() => onUnpin(restIds[0])}
-            />
-          ) : (
-            <VerticalStack
-              sessionIds={restIds}
-              sessions={sessions}
-              wsRef={wsRef}
-              wsVersion={wsVersion}
-              onUnpin={onUnpin}
-            />
-          )}
-        </Panel>
-      </Group>
+      <BalancedSessionSplit
+        idPrefix="multi-session-root"
+        sessionIds={validPinned}
+        sessions={sessions}
+        wsRef={wsRef}
+        wsVersion={wsVersion}
+        onUnpin={onUnpin}
+      />
     </div>
   );
 }
 
-function VerticalStack({
+function BalancedSessionSplit({
+  idPrefix,
   sessionIds,
   sessions,
   wsRef,
   wsVersion,
   onUnpin,
 }: {
+  idPrefix: string;
   sessionIds: string[];
   sessions: Map<string, ConsoleSession>;
   wsRef: React.RefObject<WebSocket | null>;
@@ -148,50 +125,38 @@ function VerticalStack({
     );
   }
 
-  // Split into two halves recursively for balanced layout
   const mid = Math.ceil(sessionIds.length / 2);
-  const top = sessionIds.slice(0, mid);
-  const bottom = sessionIds.slice(mid);
-  const eachSize = 100 / sessionIds.length;
+  const first = sessionIds.slice(0, mid);
+  const second = sessionIds.slice(mid);
+  const isHorizontal = sessionIds.length % 2 === 0;
+  const orientation = isHorizontal ? "horizontal" : "vertical";
+  const firstSize = (first.length / sessionIds.length) * 100;
+  const separatorClass = isHorizontal
+    ? "w-1 bg-border/30 hover:bg-primary/30 transition-colors cursor-col-resize"
+    : "h-1 bg-border/30 hover:bg-primary/30 transition-colors cursor-row-resize";
 
   return (
-    <Group orientation="vertical" id={`vstack-${sessionIds[0]}`}>
-      <Panel defaultSize={eachSize * top.length} minSize={15}>
-        {top.length === 1 ? (
-          <SessionPane
-            session={sessions.get(top[0])!}
-            wsRef={wsRef}
-            wsVersion={wsVersion}
-            onUnpin={() => onUnpin(top[0])}
-          />
-        ) : (
-          <VerticalStack
-            sessionIds={top}
-            sessions={sessions}
-            wsRef={wsRef}
-            wsVersion={wsVersion}
-            onUnpin={onUnpin}
-          />
-        )}
+    <Group orientation={orientation} id={`${idPrefix}-${sessionIds[0]}`}>
+      <Panel defaultSize={firstSize} minSize={15}>
+        <BalancedSessionSplit
+          idPrefix={`${idPrefix}-a`}
+          sessionIds={first}
+          sessions={sessions}
+          wsRef={wsRef}
+          wsVersion={wsVersion}
+          onUnpin={onUnpin}
+        />
       </Panel>
-      <Separator className="h-1 bg-border/30 hover:bg-primary/30 transition-colors cursor-row-resize" />
-      <Panel defaultSize={eachSize * bottom.length} minSize={15}>
-        {bottom.length === 1 ? (
-          <SessionPane
-            session={sessions.get(bottom[0])!}
-            wsRef={wsRef}
-            wsVersion={wsVersion}
-            onUnpin={() => onUnpin(bottom[0])}
-          />
-        ) : (
-          <VerticalStack
-            sessionIds={bottom}
-            sessions={sessions}
-            wsRef={wsRef}
-            wsVersion={wsVersion}
-            onUnpin={onUnpin}
-          />
-        )}
+      <Separator className={separatorClass} />
+      <Panel defaultSize={100 - firstSize} minSize={15}>
+        <BalancedSessionSplit
+          idPrefix={`${idPrefix}-b`}
+          sessionIds={second}
+          sessions={sessions}
+          wsRef={wsRef}
+          wsVersion={wsVersion}
+          onUnpin={onUnpin}
+        />
       </Panel>
     </Group>
   );

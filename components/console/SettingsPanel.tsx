@@ -1,36 +1,21 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
-  Eye,
-  EyeOff,
-  Copy,
-  Check,
-  Search,
   Plus,
-  Zap,
-  Bug,
-  Terminal,
   ChevronDown,
   ChevronRight,
-  Server,
-  Puzzle,
-  Globe,
-  Webhook,
-  Brain,
-  Gauge,
-  Settings,
   MonitorCog,
+  Info,
+  Variable,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useSettings, useUpdateSettings } from "@/hooks/useSettings";
-import { useTools, useInvalidateTools } from "@/hooks/useTools";
-import { useProviders } from "@/hooks/useProviders";
+import { useAppSettings, useUpdateAppSettings } from "@/hooks/useAppSettings";
 import { useConsoleLayoutStore } from "@/stores/consoleLayoutStore";
 import { findNode } from "@/lib/console/pane-tree";
-import { DEFAULT_MODEL, MODELS } from "@/lib/console/models";
 import { useConsole } from "@/components/providers/ConsoleProvider";
-import { useProviderScopeStore } from "@/stores/providerScopeStore";
 import {
   DEFAULT_APPEARANCE,
   FONT_FAMILIES,
@@ -38,22 +23,17 @@ import {
   TERMINAL_THEMES,
 } from "@/lib/console/terminal-settings";
 import { Palette, Minus } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface SettingsPanelProps {
   wsRef: React.RefObject<WebSocket | null>;
+  terminalId?: string;
 }
-
-const OUTPUT_STYLES = [
-  { value: "concise", label: "Concise" },
-  { value: "explanatory", label: "Explanatory" },
-  { value: "verbose", label: "Verbose" },
-];
-
-const EFFORT_LEVELS = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Med" },
-  { value: "high", label: "High" },
-];
 
 const ORPHAN_TIMEOUT_OPTIONS = [
   { value: 5 * 60 * 1000, label: "5 minutes" },
@@ -62,14 +42,48 @@ const ORPHAN_TIMEOUT_OPTIONS = [
   { value: 0, label: "Indefinite" },
 ];
 
-const ENV_PRESETS: {
-  label: string;
-  icon: typeof Zap;
-  env: Record<string, string>;
-}[] = [
-  { label: "Node Debug", icon: Bug, env: { NODE_OPTIONS: "--inspect" } },
-  { label: "Verbose", icon: Terminal, env: { DEBUG: "*" } },
-];
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function parseEnvAssignments(input: string): Record<string, string> {
+  const patch: Record<string, string> = {};
+  const lines = input.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i] ?? "";
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const assignment = line.startsWith("export ")
+      ? line.slice("export ".length).trim()
+      : line;
+    const eqIndex = assignment.indexOf("=");
+    if (eqIndex <= 0) {
+      throw new Error(`Line ${i + 1}: expected KEY=value or export KEY=value`);
+    }
+
+    const key = assignment.slice(0, eqIndex).trim();
+    if (!ENV_KEY_PATTERN.test(key)) {
+      throw new Error(`Line ${i + 1}: invalid env key "${key}"`);
+    }
+
+    let value = assignment.slice(eqIndex + 1).trim();
+    const wrappedInMatchingQuotes =
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")));
+    if (wrappedInMatchingQuotes) {
+      value = value.slice(1, -1);
+    }
+
+    patch[key] = value;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error("Enter at least one env assignment.");
+  }
+
+  return patch;
+}
 
 // --- Collapsible Section ---
 
@@ -81,7 +95,7 @@ function Section({
   children,
 }: {
   title: string;
-  icon: typeof Settings;
+  icon: LucideIcon;
   badge?: string;
   defaultExpanded?: boolean;
   children: React.ReactNode;
@@ -117,35 +131,36 @@ function Section({
 
 export function SettingsPanel({
   wsRef,
+  terminalId,
 }: SettingsPanelProps) {
-  const providerScope = useProviderScopeStore((s) => s.providerScope);
-  const { data: settings, isLoading: settingsLoading } = useSettings();
+  const { data: settings } = useSettings();
   const { mutate: updateSettings } = useUpdateSettings();
-  const { data: tools = [] } = useTools(providerScope);
-  const invalidateTools = useInvalidateTools(providerScope);
-  const { data: providers = [] } = useProviders();
-  const { activeSession, sendModelChange } = useConsole();
-
-  // System env state
-  const [env, setEnv] = useState<Record<string, string>>({});
-  const [filter, setFilter] = useState("");
-  const [masked, setMasked] = useState(true);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const { data: appSettings } = useAppSettings();
+  const { mutate: updateAppSettings } = useUpdateAppSettings();
+  const { sessions, activeSession, updateSessionEnv } = useConsole();
 
   // Terminal persistence (orphan timeout) — read from settings, default 30 min
-  const orphanTimeout = ((settings as Record<string, unknown> | undefined)?.orphanTimeoutMs as number) ?? 30 * 60 * 1000;
+  const orphanTimeout =
+    appSettings?.orphanTimeoutMs ??
+    ((settings as Record<string, unknown> | undefined)?.orphanTimeoutMs as
+      | number
+      | undefined) ??
+    30 * 60 * 1000;
 
   // Terminal env form state
-  const [newKey, setNewKey] = useState("");
-  const [newValue, setNewValue] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
+  const [quickEnvInput, setQuickEnvInput] = useState("");
+  const [saveToDotEnv, setSaveToDotEnv] = useState(true);
+  const [useCustomDotEnvFolder, setUseCustomDotEnvFolder] = useState(false);
+  const [customDotEnvFolder, setCustomDotEnvFolder] = useState("");
+  const [consoleSettingsOpen, setConsoleSettingsOpen] = useState(true);
+  const [applyingQuickEnv, setApplyingQuickEnv] = useState(false);
 
   const terminals = useConsoleLayoutStore((s) => s.terminals);
   const updateTerminalMeta = useConsoleLayoutStore((s) => s.updateTerminalMeta);
   const activePaneId = useConsoleLayoutStore((s) => s.activePaneId);
   const paneTree = useConsoleLayoutStore((s) => s.paneTree);
 
-  // Derive active terminal (shell or Claude)
+  // Derive active terminal (shell or provider CLI)
   const activeLeaf = activePaneId ? findNode(paneTree, activePaneId) : null;
   const derivedTermId = (() => {
     if (activeLeaf?.kind === "leaf") {
@@ -155,49 +170,94 @@ export function SettingsPanel({
     }
     return null;
   })();
-  const targetMeta = derivedTermId ? terminals[derivedTermId] : null;
-
-  // Fetch system env via WebSocket
-  useEffect(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-    const handler = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "env:current" && msg.env) {
-          setEnv(msg.env);
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    ws.addEventListener("message", handler);
-    ws.send(JSON.stringify({ type: "env:current" }));
-    return () => ws.removeEventListener("message", handler);
-  }, [wsRef]);
-
-  // Derived data
-  const mcpServers = useMemo(
-    () => tools.filter((t) => t.type === "mcp"),
-    [tools],
-  );
-  const plugins = useMemo(
-    () => tools.filter((t) => t.type === "plugin"),
-    [tools],
-  );
-  const connectedProviders = useMemo(() => providers.length, [providers]);
-
-  const filteredEntries = useMemo(() => {
-    const entries = Object.entries(env).sort(([a], [b]) => a.localeCompare(b));
-    if (!filter) return entries;
-    const lower = filter.toLowerCase();
-    return entries.filter(
-      ([k, v]) =>
-        k.toLowerCase().includes(lower) || v.toLowerCase().includes(lower),
+  const targetTerminalId = terminalId ?? derivedTermId;
+  const targetMeta = targetTerminalId ? terminals[targetTerminalId] : null;
+  const targetSession = useMemo(() => {
+    const metaSessionId = targetMeta?.sessionId;
+    if (metaSessionId && sessions.has(metaSessionId)) {
+      return sessions.get(metaSessionId) ?? null;
+    }
+    // When no explicit terminal is provided, fall back to current active session.
+    if (!terminalId) return activeSession ?? null;
+    return null;
+  }, [targetMeta?.sessionId, sessions, terminalId, activeSession]);
+  const targetSessionTerminalMeta = useMemo(() => {
+    if (targetTerminalId && terminals[targetTerminalId]) {
+      return terminals[targetTerminalId];
+    }
+    if (targetSession?.terminalId && terminals[targetSession.terminalId]) {
+      return terminals[targetSession.terminalId];
+    }
+    if (!targetSession?.id) return null;
+    return (
+      Object.values(terminals).find((meta) => meta.sessionId === targetSession.id) ??
+      null
     );
-  }, [env, filter]);
+  }, [targetTerminalId, targetSession?.id, targetSession?.terminalId, terminals]);
+  const activeRuntimeCwd =
+    targetMeta?.cwd ?? targetSessionTerminalMeta?.cwd ?? targetSession?.cwd ?? null;
+  const dotEnvTargetFolder = useMemo(() => {
+    if (useCustomDotEnvFolder) {
+      const value = customDotEnvFolder.trim();
+      return value.length > 0 ? value : null;
+    }
+    return activeRuntimeCwd;
+  }, [activeRuntimeCwd, customDotEnvFolder, useCustomDotEnvFolder]);
+
+  useEffect(() => {
+    if (!useCustomDotEnvFolder || customDotEnvFolder.trim()) return;
+    if (!activeRuntimeCwd) return;
+    setCustomDotEnvFolder(activeRuntimeCwd);
+  }, [activeRuntimeCwd, customDotEnvFolder, useCustomDotEnvFolder]);
+
+  const upsertFolderEnvEntries = useCallback(
+    async (entries: Array<[string, string]>) => {
+      if (!dotEnvTargetFolder) {
+        throw new Error("No target folder selected to write .env");
+      }
+      for (const [key, value] of entries) {
+        const res = await fetch("/api/console/env", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cwd: dotEnvTargetFolder,
+            key,
+            value,
+          }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(payload.error || "Failed to update .env file");
+        }
+      }
+    },
+    [dotEnvTargetFolder],
+  );
+
+  const sendLiveExports = useCallback(
+    (entries: Array<[string, string]>) => {
+      if (!targetTerminalId) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      const data = entries
+        .map(([key, value]) => {
+          const escaped = `'${value.replace(/'/g, `'\"'\"'`)}'`;
+          return `export ${key}=${escaped}`;
+        })
+        .join("\n");
+      ws.send(
+        JSON.stringify({
+          type: "pty:input",
+          terminalId: targetTerminalId,
+          data: `${data}\n`,
+        }),
+      );
+      return true;
+    },
+    [targetTerminalId, wsRef],
+  );
 
   // Handlers
   const handleUpdateSetting = useCallback(
@@ -206,33 +266,131 @@ export function SettingsPanel({
         { [key]: value },
         {
           onSuccess: () => {
-            // For model changes, offer to apply to current session
-            if (key === "model" && activeSession?.id && typeof value === "string") {
-              toast.success("Default model updated", {
-                description: "New sessions will use this model",
-                action: {
-                  label: "Apply to current session",
-                  onClick: () => sendModelChange(activeSession.id, value),
-                },
-              });
-            } else {
-              toast.success("Setting updated", {
-                description: "Saved — new sessions will use these defaults",
-              });
-            }
+            toast.success("Setting updated", {
+              description: "Saved successfully",
+            });
           },
           onError: () => toast.error("Failed to update setting"),
         },
       );
     },
-    [updateSettings, activeSession?.id, sendModelChange],
+    [updateSettings],
   );
+
+  const handleQuickEnvApply = useCallback(async () => {
+    const hasSessionTarget = Boolean(targetSession?.id);
+    const hasTerminalTarget = Boolean(targetTerminalId);
+    if (!hasSessionTarget && !hasTerminalTarget && !saveToDotEnv) {
+      toast.error("No active target", {
+        description: "Open a terminal session or enable .env save.",
+      });
+      return;
+    }
+    if (saveToDotEnv && !dotEnvTargetFolder) {
+      toast.error("No target folder selected", {
+        description: "Pick a folder before writing to .env.",
+      });
+      return;
+    }
+
+    setApplyingQuickEnv(true);
+    try {
+      const patch = parseEnvAssignments(quickEnvInput);
+      const entries = Object.entries(patch);
+      let wroteDotEnvCount = 0;
+      let liveApplied = false;
+      const shellLikeTarget =
+        Boolean(targetTerminalId) &&
+        (targetSession?.kind === "shell" ||
+          (!targetSession && !targetMeta?.command));
+
+      if (hasSessionTarget && targetSession?.id) {
+        updateSessionEnv(targetSession.id, patch);
+      } else if (targetTerminalId) {
+        updateTerminalMeta(targetTerminalId, {
+          envOverrides: { ...targetMeta?.envOverrides, ...patch },
+        });
+      }
+
+      if (shellLikeTarget) {
+        liveApplied = sendLiveExports(entries);
+      }
+
+      if (saveToDotEnv) {
+        await upsertFolderEnvEntries(entries);
+        wroteDotEnvCount = entries.length;
+      }
+
+      const descriptions: string[] = [];
+      if (hasSessionTarget) {
+        if (targetSession?.kind === "shell") {
+          if (liveApplied) {
+            descriptions.push("Applied to selected shell session.");
+          } else {
+            descriptions.push(
+              "Saved for selected shell session. Re-open terminal to apply now.",
+            );
+          }
+        } else {
+          descriptions.push(
+            "Saved to selected CLI session env. Restart session to apply now.",
+          );
+        }
+      } else if (hasTerminalTarget) {
+        if (shellLikeTarget && liveApplied) {
+          descriptions.push("Applied to selected shell terminal.");
+        } else if (shellLikeTarget) {
+          descriptions.push(
+            "Saved to terminal overrides. Re-open terminal to apply now.",
+          );
+        } else {
+          descriptions.push("Saved to terminal overrides.");
+        }
+      }
+      if (wroteDotEnvCount > 0) {
+        descriptions.push(
+          wroteDotEnvCount === 1
+            ? "Updated .env file."
+            : `Updated ${wroteDotEnvCount} entries in .env.`,
+        );
+      }
+
+      toast.success(
+        entries.length === 1
+          ? "Environment variable saved"
+          : "Environment variables saved",
+        {
+          description: descriptions.join(" "),
+        },
+      );
+      setQuickEnvInput("");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save env variable",
+      );
+    } finally {
+      setApplyingQuickEnv(false);
+    }
+  }, [
+    quickEnvInput,
+    dotEnvTargetFolder,
+    saveToDotEnv,
+    sendLiveExports,
+    targetSession?.id,
+    targetSession?.kind,
+    targetTerminalId,
+    targetMeta?.command,
+    targetMeta?.envOverrides,
+    upsertFolderEnvEntries,
+    updateSessionEnv,
+    updateTerminalMeta,
+  ]);
 
   const handleOrphanTimeoutChange = useCallback(
     (ms: number) => {
-      // Persist to settings DB
-      updateSettings(
-        { orphanTimeoutMs: ms } as Parameters<typeof updateSettings>[0],
+      // Persist to app settings so it stays in sync with Settings -> Core
+      updateAppSettings(
+        { orphanTimeoutMs: ms },
         {
           onSuccess: () => {
             // Send to server via WS
@@ -250,285 +408,103 @@ export function SettingsPanel({
         },
       );
     },
-    [wsRef, updateSettings],
+    [wsRef, updateAppSettings],
   );
-
-  const handleToggleMCP = useCallback(
-    async (name: string, enabled: boolean) => {
-      try {
-        const res = await fetch(`/api/tools/mcp/toggle?provider=${providerScope}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, enabled }),
-        });
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          throw new Error(body.error || "Failed to toggle MCP server");
-        }
-        invalidateTools();
-        toast.success(`MCP server ${enabled ? "enabled" : "disabled"}`, {
-          description: "Restart sessions to apply",
-        });
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to toggle MCP server",
-        );
-      }
-    },
-    [invalidateTools, providerScope],
-  );
-
-  const handleTogglePlugin = useCallback(
-    async (pluginId: string, enabled: boolean, installPath?: string) => {
-      try {
-        const res = await fetch("/api/tools/plugins", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pluginId, enabled, installPath }),
-        });
-        if (!res.ok) throw new Error();
-        invalidateTools();
-        toast.success(`Plugin ${enabled ? "enabled" : "disabled"}`, {
-          description: "Restart Claude to apply",
-        });
-      } catch {
-        toast.error("Failed to toggle plugin");
-      }
-    },
-    [invalidateTools],
-  );
-
-  const handleCopy = useCallback((key: string, value: string) => {
-    navigator.clipboard.writeText(value);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 1500);
-  }, []);
-
-  const maskValue = (v: string) => {
-    if (!masked) return v;
-    if (v.length <= 4) return "****";
-    return v.slice(0, 4) + "***";
-  };
-
-  // Terminal env handlers
-  const handleAddOverride = () => {
-    if (!derivedTermId || !newKey.trim()) return;
-    updateTerminalMeta(derivedTermId, {
-      envOverrides: { ...targetMeta?.envOverrides, [newKey.trim()]: newValue },
-    });
-    setNewKey("");
-    setNewValue("");
-    setShowAdd(false);
-  };
-
-  const handleApplyPreset = (preset: Record<string, string>) => {
-    if (!derivedTermId) return;
-    updateTerminalMeta(derivedTermId, {
-      envOverrides: { ...targetMeta?.envOverrides, ...preset },
-    });
-  };
-
-  const hooksCount = settings?.hooks
-    ? Object.values(settings.hooks).reduce(
-        (sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0),
-        0,
-      )
-    : 0;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* ── A. Quick Actions Header (sticky) ── */}
-      <div className="shrink-0 px-3 py-2.5 border-b border-border/50 bg-card/50 space-y-2.5">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <Settings className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="text-xs font-semibold text-foreground">
-            Session Defaults
+      {/* ── A. Env Header (sticky) ── */}
+      <div className="shrink-0 px-3 py-2.5 border-b border-border/50 bg-card/50">
+        <button
+          type="button"
+          onClick={() => setConsoleSettingsOpen((v) => !v)}
+          className="w-full flex items-center gap-1.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Variable className="w-3.5 h-3.5 text-muted-foreground" />
+          <span>Env</span>
+          <span className="ml-auto text-muted-foreground">
+            {consoleSettingsOpen ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronRight className="w-3 h-3" />
+            )}
           </span>
-        </div>
-        <div className="text-[10px] text-muted-foreground/60 mb-1">
-          Applied when creating new sessions
-        </div>
+        </button>
 
-        {settingsLoading ? (
-          <div className="text-detail text-muted-foreground text-center py-2">
-            Loading...
-          </div>
-        ) : settings ? (
-          <>
-            {/* Model + Output Style row */}
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <label htmlFor="setting-model" className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-0.5 block">
-                  Model
-                </label>
-                <select
-                  id="setting-model"
-                  value={
-                    ((settings as Record<string, unknown>).model as string) ||
-                    DEFAULT_MODEL
-                  }
-                  onChange={(e) => handleUpdateSetting("model", e.target.value)}
-                  className="w-full h-7 text-xs px-1.5 bg-card border border-border rounded text-foreground"
-                >
-                  {MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex-1">
-                <label htmlFor="setting-output" className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-0.5 block">
-                  Output
-                </label>
-                <select
-                  id="setting-output"
-                  value={
-                    ((settings as Record<string, unknown>)
-                      .outputStyle as string) || "concise"
-                  }
-                  onChange={(e) =>
-                    handleUpdateSetting("outputStyle", e.target.value)
-                  }
-                  className="w-full h-7 text-xs px-1.5 bg-card border border-border rounded text-foreground"
-                >
-                  {OUTPUT_STYLES.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
+        {consoleSettingsOpen && (
+          <div className="mt-2 space-y-2">
+            <div className="space-y-1">
+              <textarea
+                placeholder={"export OPENAI_API_KEY=sk-...\nANTHROPIC_API_KEY=...\n# comments are ignored"}
+                value={quickEnvInput}
+                onChange={(e) => setQuickEnvInput(e.target.value)}
+                className="w-full min-h-[62px] px-1.5 py-1 text-xs font-mono bg-card border border-border rounded text-foreground resize-y"
+              />
+              <div className="text-[10px] text-muted-foreground/70">
+                Accepts `export KEY=value` or `KEY=value` lines.
               </div>
             </div>
-
-            {/* Think toggle + Effort chips */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+              <label className="inline-flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={saveToDotEnv}
+                  onChange={(e) => setSaveToDotEnv(e.target.checked)}
+                  className="accent-primary"
+                />
+                Save to `.env`
+              </label>
+              <label className="inline-flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useCustomDotEnvFolder}
+                  onChange={(e) => setUseCustomDotEnvFolder(e.target.checked)}
+                  className="accent-primary"
+                  disabled={!saveToDotEnv}
+                />
+                Custom folder
+              </label>
+            </div>
+            {saveToDotEnv && (
+              <div className="space-y-1">
+                <label className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 block">
+                  Target .env Folder
+                </label>
+                <input
+                  type="text"
+                  value={
+                    useCustomDotEnvFolder
+                      ? customDotEnvFolder
+                      : (dotEnvTargetFolder ?? "")
+                  }
+                  onChange={(e) => setCustomDotEnvFolder(e.target.value)}
+                  disabled={!useCustomDotEnvFolder}
+                  placeholder={activeRuntimeCwd ?? "~/project"}
+                  className="w-full h-7 px-1.5 text-xs font-mono bg-card border border-border rounded text-foreground disabled:opacity-60"
+                />
+                <div className="text-[10px] text-muted-foreground/70 truncate">
+                  {dotEnvTargetFolder
+                    ? `Folder: ${dotEnvTargetFolder}`
+                    : "No folder selected for .env updates"}
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end">
               <button
-                onClick={() =>
-                  handleUpdateSetting(
-                    "alwaysThinkingEnabled",
-                    !(settings as Record<string, unknown>)
-                      .alwaysThinkingEnabled,
-                  )
-                }
-                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${
-                  (settings as Record<string, unknown>).alwaysThinkingEnabled
-                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                    : "bg-muted/40 text-muted-foreground hover:bg-muted/60"
-                }`}
+                onClick={() => void handleQuickEnvApply()}
+                disabled={applyingQuickEnv || !quickEnvInput.trim()}
+                className="h-7 px-2 rounded text-xs font-medium bg-primary/20 hover:bg-primary/30 text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Brain className="w-3 h-3" />
-                Always Think
+                {applyingQuickEnv ? "Saving..." : "Apply"}
               </button>
-
-              <div className="flex items-center gap-0.5 ml-auto">
-                <span className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mr-1.5">
-                  Effort
-                </span>
-                {EFFORT_LEVELS.map((level) => (
-                  <button
-                    key={level.value}
-                    onClick={() =>
-                      handleUpdateSetting("effortLevel", level.value)
-                    }
-                    className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
-                      ((settings as Record<string, unknown>).effortLevel ||
-                        "medium") === level.value
-                        ? "bg-primary/15 text-primary"
-                        : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-                    }`}
-                  >
-                    {level.label}
-                  </button>
-                ))}
-              </div>
             </div>
-
-            <div className="text-[10px] text-muted-foreground/50 italic">
-              Effort is set at session start and cannot be changed mid-session
-            </div>
-          </>
-        ) : null}
+          </div>
+        )}
       </div>
 
       {/* ── Scrollable sections ── */}
       <div className="flex-1 overflow-y-auto">
-        {/* ── B. Terminal Environment ── */}
-        {targetMeta && (
-          <Section
-            title={`Terminal: ${targetMeta.label}`}
-            icon={Terminal}
-            badge="new terminals only"
-          >
-            {/* Current overrides */}
-            {targetMeta.envOverrides &&
-              Object.keys(targetMeta.envOverrides).length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {Object.entries(targetMeta.envOverrides).map(([k, v]) => (
-                    <span
-                      key={k}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-meta font-mono"
-                    >
-                      <span className="text-primary/80">{k}</span>
-                      <span className="text-muted-foreground">=</span>
-                      <span className="text-muted-foreground">{v}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-            {/* Presets + Add */}
-            <div className="flex items-center gap-1 flex-wrap">
-              {ENV_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  onClick={() => handleApplyPreset(preset.env)}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-meta bg-muted/30 hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <preset.icon className="w-2.5 h-2.5" />
-                  {preset.label}
-                </button>
-              ))}
-              <button
-                onClick={() => setShowAdd(!showAdd)}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-meta bg-muted/30 hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Plus className="w-2.5 h-2.5" />
-                Custom
-              </button>
-            </div>
-
-            {/* Add override form */}
-            {showAdd && (
-              <div className="flex items-center gap-1 mt-2">
-                <input
-                  type="text"
-                  placeholder="KEY"
-                  value={newKey}
-                  onChange={(e) => setNewKey(e.target.value)}
-                  className="flex-1 bg-muted/30 rounded px-1.5 py-0.5 text-xs font-mono outline-none placeholder:text-muted-foreground"
-                />
-                <span className="text-muted-foreground text-xs">=</span>
-                <input
-                  type="text"
-                  placeholder="value"
-                  value={newValue}
-                  onChange={(e) => setNewValue(e.target.value)}
-                  className="flex-1 bg-muted/30 rounded px-1.5 py-0.5 text-xs font-mono outline-none placeholder:text-muted-foreground"
-                  onKeyDown={(e) => e.key === "Enter" && handleAddOverride()}
-                />
-                <button
-                  onClick={handleAddOverride}
-                  className="px-2 py-0.5 rounded text-xs bg-primary/20 hover:bg-primary/30 text-primary transition-colors"
-                >
-                  Add
-                </button>
-              </div>
-            )}
-          </Section>
-        )}
-
-        {/* ── C. Terminal Appearance ── */}
+        {/* ── B. Terminal Appearance ── */}
         <Section title="Terminal Appearance" icon={Palette}>
           {(() => {
             const appearance = settings?.terminalAppearance ?? {};
@@ -653,30 +629,24 @@ export function SettingsPanel({
 
                 {/* Color Theme */}
                 <div>
-                  <label id="setting-color-theme-label" className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1 block">
+                  <label
+                    htmlFor="setting-color-theme"
+                    className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1 block"
+                  >
                     Color Theme
                   </label>
-                  <div className="grid grid-cols-5 gap-2">
-                    {Object.entries(TERMINAL_THEMES).map(([key, { label, theme }]) => (
-                      <button
-                        key={key}
-                        onClick={() => updateAppearance({ theme: key })}
-                        className={`flex flex-col items-center gap-1 p-2 rounded border transition-colors ${
-                          currentTheme === key
-                            ? "border-primary bg-primary/10"
-                            : "border-border hover:border-foreground/30"
-                        }`}
-                      >
-                        <div className="flex gap-0.5">
-                          <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: theme.background }} />
-                          <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: theme.foreground }} />
-                          <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: theme.blue }} />
-                          <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: theme.green }} />
-                        </div>
-                        <span className="text-[10px] text-muted-foreground">{label}</span>
-                      </button>
+                  <select
+                    id="setting-color-theme"
+                    value={currentTheme}
+                    onChange={(e) => updateAppearance({ theme: e.target.value })}
+                    className="w-full h-7 text-xs px-1.5 bg-card border border-border rounded text-foreground"
+                  >
+                    {Object.entries(TERMINAL_THEMES).map(([key, { label }]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
                     ))}
-                  </div>
+                  </select>
                 </div>
 
                 {/* Scrollback */}
@@ -725,9 +695,36 @@ export function SettingsPanel({
 
                 {/* Bell Style */}
                 <div>
-                  <label id="setting-bell-style-label" className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1 block">
-                    Bell Style
-                  </label>
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <label
+                      id="setting-bell-style-label"
+                      className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70"
+                    >
+                      Bell Style
+                    </label>
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex items-center text-muted-foreground/70 hover:text-foreground transition-colors"
+                            aria-label="Bell style help"
+                          >
+                            <Info size={11} />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+                          <p>
+                            Controls how terminal bell events are surfaced.
+                          </p>
+                          <p>
+                            Visual: brief flash cue. Badge: activity indicator cue.
+                            None: ignore bell events.
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
                   <div className="flex gap-1">
                     {(["visual", "badge", "none"] as const).map((style) => (
                       <button
@@ -770,114 +767,6 @@ export function SettingsPanel({
               </div>
             );
           })()}
-        </Section>
-
-        {/* ── D. Infrastructure Grid ── */}
-        <Section title="Infrastructure" icon={Server} defaultExpanded>
-          <div className="grid grid-cols-2 gap-2">
-            {/* Hooks card */}
-            <a
-              href="/hooks"
-              className="flex items-center gap-2 p-2 rounded-md border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors group"
-            >
-              <Webhook className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground" />
-              <div>
-                <div className="text-xs font-medium text-foreground">Hooks</div>
-                <div className="text-[10px] text-muted-foreground">
-                  {hooksCount} configured
-                </div>
-              </div>
-            </a>
-
-            {/* Providers card */}
-            <a
-              href="/settings"
-              className="flex items-center gap-2 p-2 rounded-md border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors group"
-            >
-              <Globe className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground" />
-              <div>
-                <div className="text-xs font-medium text-foreground">
-                  Providers
-                </div>
-                <div className="text-[10px] text-muted-foreground">
-                  {connectedProviders} connected
-                </div>
-              </div>
-            </a>
-          </div>
-
-          {/* MCP Servers */}
-          {mcpServers.length > 0 && (
-            <div className="mt-3">
-              <div className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1">
-                MCP Servers
-              </div>
-              <div className="space-y-0.5">
-                {mcpServers.map((s) => (
-                  <div
-                    key={s.name}
-                    className="flex items-center gap-1.5 py-0.5"
-                  >
-                    <Server className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
-                    <span className="text-xs font-mono text-muted-foreground truncate flex-1">
-                      {s.name}
-                    </span>
-                    <button
-                      onClick={() =>
-                        handleToggleMCP(s.name, !s.enabled)
-                      }
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                        s.enabled
-                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                          : "bg-muted/40 text-muted-foreground hover:bg-muted/60"
-                      }`}
-                      title={s.enabled ? "Disable MCP server" : "Enable MCP server"}
-                    >
-                      {s.enabled ? "on" : "off"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Plugins */}
-          {plugins.length > 0 && (
-            <div className="mt-3">
-              <div className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1">
-                Plugins
-              </div>
-              <div className="space-y-0.5">
-                {plugins.map((p) => (
-                  <div
-                    key={p.name}
-                    className="flex items-center gap-1.5 py-0.5"
-                  >
-                    <Puzzle className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
-                    <span className="text-xs font-mono text-muted-foreground truncate flex-1">
-                      {p.name}
-                    </span>
-                    <button
-                      onClick={() =>
-                        handleTogglePlugin(
-                          p.pluginId || p.name,
-                          !p.enabled,
-                          p.installPath,
-                        )
-                      }
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                        p.enabled
-                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                          : "bg-muted/40 text-muted-foreground hover:bg-muted/60"
-                      }`}
-                    >
-                      {p.enabled ? "on" : "off"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </Section>
 
         {/* ── E. Advanced ── */}
@@ -957,107 +846,9 @@ export function SettingsPanel({
               </select>
             </div>
 
-            {/* Statusline summary */}
-            {settings.statuslinePlan && (
-              <div className="mt-3 pt-2 border-t border-border/30">
-                <div className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/70 mb-1">
-                  Statusline
-                </div>
-                <div className="flex items-center gap-2">
-                  <Gauge className="w-3 h-3 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">
-                    Plan: {settings.statuslinePlan}
-                  </span>
-                  {settings.statuslineAlertAt && (
-                    <span className="text-xs text-muted-foreground/60">
-                      Alert at{" "}
-                      {settings.statuslinePlan === "api"
-                        ? `$${settings.statuslineAlertAt}`
-                        : `${settings.statuslineAlertAt}%`}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
           </Section>
         )}
 
-        {/* ── F. System Environment ── */}
-        <Section title="System Environment" icon={MonitorCog}>
-          {/* Search + mask toggle */}
-          <div className="flex items-center gap-1.5 mb-2">
-            <div className="flex-1 flex items-center gap-1 bg-muted/30 rounded px-1.5 py-0.5">
-              <Search className="w-2.5 h-2.5 text-muted-foreground/50" />
-              <input
-                type="text"
-                placeholder="Filter variables..."
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-              />
-            </div>
-            <button
-              onClick={() => setMasked(!masked)}
-              className="p-1 rounded hover:bg-muted/30 text-muted-foreground"
-              title={masked ? "Show values" : "Mask values"}
-            >
-              {masked ? (
-                <EyeOff className="w-3 h-3" />
-              ) : (
-                <Eye className="w-3 h-3" />
-              )}
-            </button>
-            <span className="text-[10px] text-muted-foreground/60">
-              {filteredEntries.length} / {Object.keys(env).length}
-            </span>
-          </div>
-
-          {/* Table */}
-          <div className="max-h-[300px] overflow-auto rounded border border-border/30">
-            <table className="table-readable w-full">
-              <tbody>
-                {filteredEntries.map(([key, value], i) => (
-                  <tr
-                    key={key}
-                    className={`group ${i % 2 === 0 ? "bg-transparent" : "bg-muted/10"} hover:bg-muted/20`}
-                  >
-                    <td className="px-2 py-1 font-mono text-meta font-medium text-foreground/80 whitespace-nowrap">
-                      {key}
-                    </td>
-                    <td className="px-2 py-1 font-mono text-meta text-muted-foreground truncate max-w-[300px]">
-                      {maskValue(value)}
-                    </td>
-                    <td className="w-8 px-1">
-                      <button
-                        onClick={() => handleCopy(key, value)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted/30 transition-opacity"
-                        title="Copy value"
-                      >
-                        {copiedKey === key ? (
-                          <Check className="w-3 h-3 text-green-400" />
-                        ) : (
-                          <Copy className="w-3 h-3 text-muted-foreground" />
-                        )}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {filteredEntries.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={3}
-                      className="px-3 py-6 text-center text-muted-foreground/50 text-detail"
-                    >
-                      {Object.keys(env).length === 0
-                        ? "Loading..."
-                        : "No matching variables"}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Section>
       </div>
     </div>
   );

@@ -10,16 +10,18 @@ interface MockPty {
   onExit: (cb: (payload: ExitPayload) => void) => { dispose: () => void };
 }
 
-const spawnMock = vi.fn();
 const killProcessMock = vi.fn();
-
-vi.mock("node-pty", () => ({
-  spawn: spawnMock,
-}));
 
 vi.mock("@/lib/platform", () => ({
   killProcess: killProcessMock,
 }));
+
+const ptyRuntimeMock = {
+  spawnCliPty: vi.fn(),
+  writePromptAndEof: vi.fn(),
+};
+
+vi.mock("@/lib/ai/pty-runtime", () => ptyRuntimeMock);
 
 function createMockPty(): {
   pty: MockPty;
@@ -50,16 +52,19 @@ function createMockPty(): {
 
 describe("CLI terminal runtime wrappers", () => {
   beforeEach(() => {
-    spawnMock.mockReset();
     killProcessMock.mockReset();
+    ptyRuntimeMock.spawnCliPty.mockReset();
+    ptyRuntimeMock.writePromptAndEof.mockReset();
     delete process.env.CLAUDECODE;
+    delete process.env.CLAUDE_API_KEY;
     delete process.env.KEEP_TEST_ENV;
   });
 
-  it("claudeOneShot spawns a PTY terminal and writes prompt + EOF", async () => {
+  it("claudeOneShot passes prompt as CLI arg in print mode", async () => {
     const { pty, emitData, emitExit } = createMockPty();
-    spawnMock.mockReturnValue(pty);
+    ptyRuntimeMock.spawnCliPty.mockReturnValue(pty);
     process.env.CLAUDECODE = "nested";
+    process.env.CLAUDE_API_KEY = "keep-me";
     process.env.KEEP_TEST_ENV = "1";
 
     const { claudeOneShot } = await import("@/lib/ai/claude");
@@ -76,9 +81,14 @@ describe("CLI terminal runtime wrappers", () => {
     const result = await promise;
 
     expect(result).toBe("output line");
-    expect(spawnMock).toHaveBeenCalledWith(
+    expect(ptyRuntimeMock.spawnCliPty).toHaveBeenCalledWith(
       "claude",
-      expect.arrayContaining(["--model", "claude-sonnet-4-6"]),
+      expect.arrayContaining([
+        "--model",
+        "claude-sonnet-4-6",
+        "--print",
+        "hello from test",
+      ]),
       expect.objectContaining({
         cwd: "/tmp",
         env: expect.objectContaining({
@@ -88,15 +98,17 @@ describe("CLI terminal runtime wrappers", () => {
         }),
       }),
     );
-    const spawnEnv = spawnMock.mock.calls[0]?.[2]?.env as Record<string, string>;
+    const spawnEnv = ptyRuntimeMock.spawnCliPty.mock.calls[0]?.[2]
+      ?.env as Record<string, string>;
+    expect(spawnEnv.CLAUDE_API_KEY).toBe("keep-me");
     expect(spawnEnv.CLAUDECODE).toBeUndefined();
-    expect(pty.write).toHaveBeenNthCalledWith(1, "hello from test");
-    expect(pty.write).toHaveBeenNthCalledWith(2, "\x04");
+    expect(pty.write).not.toHaveBeenCalled();
+    expect(ptyRuntimeMock.writePromptAndEof).not.toHaveBeenCalled();
   });
 
   it("codexOneShot spawns a PTY terminal and writes prompt + EOF", async () => {
     const { pty, emitData, emitExit } = createMockPty();
-    spawnMock.mockReturnValue(pty);
+    ptyRuntimeMock.spawnCliPty.mockReturnValue(pty);
 
     const { codexOneShot } = await import("@/lib/ai/codex");
     const promise = codexOneShot("build a plan", "/tmp", 5_000, {
@@ -109,7 +121,7 @@ describe("CLI terminal runtime wrappers", () => {
     const result = await promise;
 
     expect(result).toBe("codex result");
-    expect(spawnMock).toHaveBeenCalledWith(
+    expect(ptyRuntimeMock.spawnCliPty).toHaveBeenCalledWith(
       "codex",
       expect.arrayContaining([
         "exec",
@@ -126,7 +138,9 @@ describe("CLI terminal runtime wrappers", () => {
         }),
       }),
     );
-    expect(pty.write).toHaveBeenNthCalledWith(1, "build a plan");
-    expect(pty.write).toHaveBeenNthCalledWith(2, "\x04");
+    expect(ptyRuntimeMock.writePromptAndEof).toHaveBeenCalledWith(
+      pty,
+      "build a plan",
+    );
   });
 });

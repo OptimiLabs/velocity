@@ -8,6 +8,12 @@ import type {
   ComposeResult,
 } from "@/types/instructions";
 import type { ProviderTargetMode } from "@/types/provider-artifacts";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 // --- Instruction Files ---
 
@@ -105,21 +111,39 @@ export function useGenerateSkill() {
       previousContent?: string;
       category?: string;
     }) => {
-      const res = await fetch("/api/instructions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate-skill", ...data }),
+      const jobId = startProcessingJob({
+        title: "Generate skill draft",
+        subtitle: summarizeForJob(`${data.name}: ${data.prompt}`),
+        source: "instructions",
+        provider: data.provider,
       });
-      if (!res.ok)
-        throw new Error((await res.json()).error || "Generation failed");
-      return res.json() as Promise<{
-        success: boolean;
-        content: string;
-        tokensUsed: number;
-        cost: number;
-        targetProvider?: ProviderTargetMode;
-        results?: unknown[];
-      }>;
+      try {
+        const res = await fetch("/api/instructions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "generate-skill", ...data }),
+        });
+        if (!res.ok) {
+          throw new Error((await res.json()).error || "Generation failed");
+        }
+        const result = (await res.json()) as {
+          success: boolean;
+          content: string;
+          tokensUsed: number;
+          cost: number;
+          targetProvider?: ProviderTargetMode;
+          results?: unknown[];
+        };
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(`Generated ${data.name}`),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(`${data.name}: ${data.prompt}`),
+        });
+        throw error;
+      }
     },
   });
 }
@@ -192,16 +216,35 @@ export function useComposeInstructions() {
 
   return useMutation({
     mutationFn: async (data: ComposeRequest): Promise<ComposeResult> => {
-      const res = await fetch("/api/instructions/compose", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+      const jobId = startProcessingJob({
+        title: "Compose instructions with AI",
+        subtitle: summarizeForJob(data.prompt),
+        source: "instructions",
+        provider: data.provider,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Compose failed" }));
-        throw new Error(err.error || "Compose failed");
+      try {
+        const res = await fetch("/api/instructions/compose", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        if (!res.ok) {
+          const err = await res
+            .json()
+            .catch(() => ({ error: "Compose failed" }));
+          throw new Error(err.error || "Compose failed");
+        }
+        const result = (await res.json()) as ComposeResult;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(result.filePath || "Compose complete"),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(data.prompt),
+        });
+        throw error;
       }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["instructions"] });
@@ -225,18 +268,35 @@ export function useAIEdit() {
       provider: string;
       prompt: string;
     }) => {
-      const res = await fetch(`/api/instructions/${id}/edit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, prompt }),
+      const jobId = startProcessingJob({
+        title: "Edit instructions with AI",
+        subtitle: summarizeForJob(prompt),
+        source: "instructions",
+        provider,
       });
-      if (!res.ok) {
-        const err = await res
-          .json()
-          .catch(() => ({ error: "AI editing failed" }));
-        throw new Error(err.error || "AI editing failed");
+      try {
+        const res = await fetch(`/api/instructions/${id}/edit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, prompt }),
+        });
+        if (!res.ok) {
+          const err = await res
+            .json()
+            .catch(() => ({ error: "AI editing failed" }));
+          throw new Error(err.error || "AI editing failed");
+        }
+        const result = await res.json();
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob("Edit complete"),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(prompt),
+        });
+        throw error;
       }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["instructions"] });
@@ -456,9 +516,8 @@ export function useScanDirectory() {
       }
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["instructions"] });
-      toast.success(`Scanned: ${data.added} new files indexed`);
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -629,18 +688,35 @@ export function useSummarizeContent() {
       provider?: string;
       prompt?: string;
     }) => {
-      const res = await fetch("/api/instructions/summarize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, provider, prompt }),
+      const jobId = startProcessingJob({
+        title: "Summarize content with AI",
+        subtitle: summarizeForJob(prompt || content),
+        source: "instructions",
+        provider,
       });
-      if (!res.ok) {
-        const err = await res
-          .json()
-          .catch(() => ({ error: "Summarization failed" }));
-        throw new Error(err.error || "Summarization failed");
+      try {
+        const res = await fetch("/api/instructions/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content, provider, prompt }),
+        });
+        if (!res.ok) {
+          const err = await res
+            .json()
+            .catch(() => ({ error: "Summarization failed" }));
+          throw new Error(err.error || "Summarization failed");
+        }
+        const result = await res.json();
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob("Summary ready"),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(prompt || content),
+        });
+        throw error;
       }
-      return res.json();
     },
     onError: () => toast.error("Failed to summarize content"),
   });

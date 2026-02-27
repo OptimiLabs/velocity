@@ -15,8 +15,8 @@ export interface CachedTerminal {
 
 export const MAX_SERIALIZE_BYTES = 512 * 1024; // 512KB cap per terminal
 export const MAX_SERIALIZED_TERMINALS = 30;
-export const MAX_TOTAL_SERIALIZED_BYTES = 6 * 1024 * 1024; // 6MB cap across all terminals
-export const MAX_CACHED_TERMINALS = 16;
+export const MAX_TOTAL_SERIALIZED_BYTES = 4 * 1024 * 1024; // 4MB cap across all terminals
+export const MAX_CACHED_TERMINALS = 10;
 
 /** Module-level cache for serialized terminal buffers across unmount/remount cycles */
 export const serializedBuffers = new Map<string, string>();
@@ -38,6 +38,17 @@ export function disposeTerminalDomCache(terminalId: string) {
   }
 }
 
+function snapshotSerializedCache(terminalId: string, cached: CachedTerminal) {
+  try {
+    const snapshot = cached.serializeAddon.serialize();
+    if (snapshot) {
+      setSerializedBuffer(terminalId, snapshot);
+    }
+  } catch {
+    // Best-effort snapshot on cache eviction/replacement.
+  }
+}
+
 /**
  * Insert a terminal into the DOM cache with LRU-style eviction.
  * Keeps memory bounded when many terminals/groups are toggled.
@@ -45,6 +56,7 @@ export function disposeTerminalDomCache(terminalId: string) {
 export function cacheTerminalDom(terminalId: string, cached: CachedTerminal) {
   const existing = terminalDomCache.get(terminalId);
   if (existing) {
+    snapshotSerializedCache(terminalId, existing);
     existing.term.dispose();
     existing.wrapper.remove();
     terminalDomCache.delete(terminalId);
@@ -56,6 +68,7 @@ export function cacheTerminalDom(terminalId: string, cached: CachedTerminal) {
     if (!oldestId) break;
     const oldest = terminalDomCache.get(oldestId);
     if (oldest) {
+      snapshotSerializedCache(oldestId, oldest);
       oldest.term.dispose();
       oldest.wrapper.remove();
     }

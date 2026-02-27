@@ -1,4 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 interface MergeSkillRequest {
   skills: Array<{
@@ -24,16 +30,33 @@ interface MergeSkillResponse {
 export function useMergeSkills() {
   return useMutation({
     mutationFn: async (req: MergeSkillRequest): Promise<MergeSkillResponse> => {
-      const res = await fetch("/api/skills/merge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(req),
+      const jobId = startProcessingJob({
+        title: "Merge skills with AI",
+        subtitle: summarizeForJob(req.prompt),
+        source: "skills",
+        provider: req.provider,
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Merge failed");
+      try {
+        const res = await fetch("/api/skills/merge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(req),
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Merge failed");
+        }
+        const result = (await res.json()) as MergeSkillResponse;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(result.name ? `Generated ${result.name}` : "Merge complete"),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(req.prompt),
+        });
+        throw error;
       }
-      return res.json();
     },
   });
 }

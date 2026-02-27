@@ -351,11 +351,13 @@ function resolvePath(referencedPath: string, sourceFilePath: string): string {
 
 function findProjectRoot(filePath: string): string | null {
   let dir = path.dirname(filePath);
-  while (dir !== "/" && dir !== HOME) {
+  while (dir !== HOME) {
     if (fs.existsSync(path.join(dir, ".git"))) {
       return dir;
     }
-    dir = path.dirname(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
   return null;
 }

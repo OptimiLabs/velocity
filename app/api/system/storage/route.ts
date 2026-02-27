@@ -8,6 +8,7 @@ import {
   AGENTS_DIR,
   SKILLS_DIR,
 } from "@/lib/claude-paths";
+import { deriveProjectPath } from "@/lib/parser/indexer";
 
 interface StorageBucket {
   label: string;
@@ -126,8 +127,12 @@ export async function GET() {
         try {
           if (fs.existsSync(claudeMd)) {
             const stat = fs.statSync(claudeMd);
+            const decodedPath = deriveProjectPath(entry.name);
+            const displayBase = decodedPath
+              ? decodedPath.replace(os.homedir(), "~")
+              : `projects/${entry.name}`;
             instructionFiles.push({
-              name: `projects/${entry.name}/CLAUDE.md`,
+              name: `${displayBase}/CLAUDE.md`,
               bytes: stat.size,
             });
           }

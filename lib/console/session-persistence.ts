@@ -3,6 +3,7 @@
  */
 
 import type { ConsoleSession, SessionGroup } from "@/types/console";
+import type { ConfigProvider } from "@/types/provider";
 
 // --- Storage key constants ---
 export const STORAGE_KEY_SESSIONS = "claude-console-sessions";
@@ -18,6 +19,7 @@ export interface PersistedSession {
   cwd: string;
   status: "active" | "idle";
   kind?: "claude" | "shell";
+  provider?: ConfigProvider;
   createdAt: number;
   claudeSessionId?: string;
   terminalId?: string;
@@ -102,6 +104,7 @@ export function persistSessions(
       cwd: s.cwd,
       status: s.status,
       kind: s.kind,
+      provider: s.provider,
       createdAt: s.createdAt,
       claudeSessionId: s.claudeSessionId,
       terminalId: s.terminalId,

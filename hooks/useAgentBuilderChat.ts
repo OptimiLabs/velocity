@@ -5,6 +5,13 @@ import {
   normalizeGeneratedAgentConfig,
   type AgentConfigStatus,
 } from "@/lib/agents/config-normalizer";
+import {
+  cancelProcessingJob,
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -25,6 +32,50 @@ function stripConfigBlocks(text: string): string {
   return text.replace(/```agent-config\s*\r?\n[\s\S]*?```/gi, "").trim();
 }
 
+function serializeCurrentConfig(config: Partial<Agent>): Partial<Agent> | null {
+  const next: Partial<Agent> = {};
+
+  if (typeof config.name === "string" && config.name.trim()) {
+    next.name = config.name.trim();
+  }
+  if (typeof config.description === "string" && config.description.trim()) {
+    next.description = config.description.trim();
+  }
+  if (typeof config.model === "string" && config.model.trim()) {
+    next.model = config.model.trim();
+  }
+  if (
+    config.effort === "low" ||
+    config.effort === "medium" ||
+    config.effort === "high"
+  ) {
+    next.effort = config.effort;
+  }
+  if (typeof config.prompt === "string" && config.prompt.trim()) {
+    next.prompt = config.prompt;
+  }
+  if (Array.isArray(config.tools)) {
+    const tools = config.tools.filter(
+      (tool): tool is string => typeof tool === "string" && tool.trim().length > 0,
+    );
+    if (tools.length > 0) next.tools = tools;
+  }
+  if (Array.isArray(config.disallowedTools)) {
+    const disallowedTools = config.disallowedTools.filter(
+      (tool): tool is string => typeof tool === "string" && tool.trim().length > 0,
+    );
+    if (disallowedTools.length > 0) next.disallowedTools = disallowedTools;
+  }
+  if (Array.isArray(config.skills)) {
+    const skills = config.skills.filter(
+      (skill): skill is string => typeof skill === "string" && skill.trim().length > 0,
+    );
+    if (skills.length > 0) next.skills = skills;
+  }
+
+  return Object.keys(next).length > 0 ? next : null;
+}
+
 export function useAgentBuilderChat(
   existingAgents?: { name: string; description: string }[],
 ) {
@@ -38,6 +89,7 @@ export function useAgentBuilderChat(
   const [streamingText, setStreamingText] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const latestAccumulatedRef = useRef("");
+  const activeJobIdRef = useRef<string | null>(null);
 
   const applyExtractedConfig = useCallback(
     (text: string, fallbackDescription = "") => {
@@ -86,14 +138,24 @@ export function useAgentBuilderChat(
       setConfigErrors([]);
 
       abortRef.current = new AbortController();
+      const jobId = startProcessingJob({
+        title: "Agent chat response",
+        subtitle: summarizeForJob(text),
+        source: "agents",
+      });
+      activeJobIdRef.current = jobId;
 
       try {
+        const serializedCurrentConfig = serializeCurrentConfig(currentConfig);
         const res = await fetch("/api/agents/build-chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             provider,
             messages: newMessages,
+            ...(serializedCurrentConfig
+              ? { currentConfig: serializedCurrentConfig }
+              : {}),
             ...(existingAgents?.length && { existingAgents }),
           }),
           signal: abortRef.current.signal,
@@ -168,8 +230,21 @@ export function useAgentBuilderChat(
             { role: "assistant", content: displayText },
           ]);
         }
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob("Response ready"),
+        });
       } catch (err) {
-        if ((err as Error).name === "AbortError") return;
+        if ((err as Error).name === "AbortError") {
+          if (activeJobIdRef.current === jobId) {
+            cancelProcessingJob(jobId, "Stopped by user");
+          }
+          return;
+        }
+        if (activeJobIdRef.current === jobId) {
+          failProcessingJob(jobId, err, {
+            subtitle: summarizeForJob(text),
+          });
+        }
         setMessages((prev) => [
           ...prev,
           {
@@ -178,12 +253,15 @@ export function useAgentBuilderChat(
           },
         ]);
       } finally {
+        if (activeJobIdRef.current === jobId) {
+          activeJobIdRef.current = null;
+        }
         setIsStreaming(false);
         setStreamingText("");
         abortRef.current = null;
       }
     },
-    [messages, isStreaming, existingAgents, applyExtractedConfig],
+    [messages, isStreaming, existingAgents, currentConfig, applyExtractedConfig],
   );
 
   const updateConfig = useCallback((updates: Partial<Agent>) => {
@@ -200,6 +278,11 @@ export function useAgentBuilderChat(
   }, []);
 
   const stopStreaming = useCallback(() => {
+    const activeJobId = activeJobIdRef.current;
+    if (activeJobId) {
+      cancelProcessingJob(activeJobId, "Stopped by user");
+      activeJobIdRef.current = null;
+    }
     abortRef.current?.abort();
   }, []);
 
@@ -210,6 +293,11 @@ export function useAgentBuilderChat(
   }, [applyExtractedConfig]);
 
   const reset = useCallback(() => {
+    const activeJobId = activeJobIdRef.current;
+    if (activeJobId) {
+      cancelProcessingJob(activeJobId, "Canceled");
+      activeJobIdRef.current = null;
+    }
     abortRef.current?.abort();
     setMessages([]);
     setCurrentConfig({});

@@ -5,6 +5,7 @@ import os from "os";
 import { getDb } from "@/lib/db/index";
 import { deriveProjectPath } from "@/lib/parser/indexer";
 import { indexerLog } from "@/lib/logger";
+import type { ConfigProvider } from "@/types/provider";
 import {
   CODEX_HOME,
   CODEX_INSTRUCTIONS_DIR,
@@ -107,6 +108,54 @@ function estimateTokens(content: string): number {
   return Math.ceil(content.length / 4);
 }
 
+function normalizeFsPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
+function isUnderPath(filePath: string, parentPath: string): boolean {
+  const normalizedFile = normalizeFsPath(path.resolve(filePath));
+  const normalizedParent = normalizeFsPath(path.resolve(parentPath));
+  return (
+    normalizedFile === normalizedParent ||
+    normalizedFile.startsWith(`${normalizedParent}/`)
+  );
+}
+
+function inferInstructionProvider(filePath: string): ConfigProvider {
+  const normalized = normalizeFsPath(path.resolve(filePath));
+  const base = path.basename(filePath);
+
+  if (base === "GEMINI.md") return "gemini";
+  if (base === "AGENTS.md" || base === "AGENTS.override.md") return "codex";
+
+  if (
+    normalized.includes("/.gemini/") ||
+    isUnderPath(normalized, GEMINI_DIR)
+  ) {
+    return "gemini";
+  }
+
+  if (
+    normalized.includes("/.codex/") ||
+    normalized.includes("/.agents/skills/") ||
+    isUnderPath(normalized, CODEX_HOME)
+  ) {
+    return "codex";
+  }
+
+  return "claude";
+}
+
+function isGlobalInstructionPath(filePath: string): boolean {
+  const normalized = normalizeFsPath(path.resolve(filePath));
+  if (isUnderPath(normalized, CLAUDE_DIR)) return true;
+  if (isUnderPath(normalized, CODEX_HOME)) return true;
+  if (isUnderPath(normalized, GEMINI_DIR)) return true;
+  const homeClaude = normalizeFsPath(path.join(os.homedir(), "CLAUDE.md"));
+  if (normalized === homeClaude) return true;
+  return false;
+}
+
 export function classifyFileType(filePath: string): string {
   const base = path.basename(filePath);
   if (base === "CLAUDE.md") return "CLAUDE.md";
@@ -141,25 +190,41 @@ export function indexKnowledgeFile(
   const slug = fileName.replace(/\.md$/, "");
 
   const db = getDb();
+  const provider = inferInstructionProvider(filePath);
 
   const existing = db
     .prepare(
-      "SELECT id, file_mtime, content_hash FROM instruction_files WHERE file_path = ?",
+      "SELECT id, file_mtime, content_hash, provider FROM instruction_files WHERE file_path = ?",
     )
     .get(filePath) as
-    | { id: string; file_mtime: string | null; content_hash: string | null }
+    | {
+        id: string;
+        file_mtime: string | null;
+        content_hash: string | null;
+        provider: string | null;
+      }
     | undefined;
 
   if (existing) {
-    if (existing.file_mtime === mtime) return false;
+    const existingProvider = (existing.provider as ConfigProvider | null) ?? "claude";
+    const providerChanged = existingProvider !== provider;
+
+    if (existing.file_mtime === mtime) {
+      if (providerChanged) {
+        db.prepare(
+          "UPDATE instruction_files SET provider = ?, last_indexed_at = ? WHERE id = ?",
+        ).run(provider, new Date().toISOString(), existing.id);
+      }
+      return providerChanged;
+    }
 
     const content = fs.readFileSync(filePath, "utf-8");
     const hash = computeHash(content);
     if (existing.content_hash === hash) {
       db.prepare(
-        "UPDATE instruction_files SET file_mtime = ?, last_indexed_at = ? WHERE id = ?",
-      ).run(mtime, new Date().toISOString(), existing.id);
-      return false;
+        "UPDATE instruction_files SET file_mtime = ?, last_indexed_at = ?, provider = ? WHERE id = ?",
+      ).run(mtime, new Date().toISOString(), provider, existing.id);
+      return providerChanged;
     }
 
     const now = new Date().toISOString();
@@ -169,7 +234,7 @@ export function indexKnowledgeFile(
       UPDATE instruction_files
       SET content = ?, content_hash = ?, token_count = ?, char_count = ?,
           file_mtime = ?, last_indexed_at = ?, updated_at = ?, title = ?,
-          category = ?, slug = ?
+          category = ?, slug = ?, provider = ?
       WHERE id = ?
     `,
     ).run(
@@ -183,6 +248,7 @@ export function indexKnowledgeFile(
       title,
       category,
       slug,
+      provider,
       existing.id,
     );
     return true;
@@ -200,10 +266,10 @@ export function indexKnowledgeFile(
     INSERT INTO instruction_files
       (id, file_path, file_type, project_path, project_id, file_name, content, content_hash,
        token_count, is_editable, last_indexed_at, file_mtime, source, tags,
-       category, slug, title, description, char_count, is_active,
+       category, slug, title, description, char_count, is_active, provider,
        created_at, updated_at)
     VALUES (?, ?, 'knowledge.md', NULL, NULL, ?, ?, ?, ?, 1, ?, ?, 'auto', '[]',
-            ?, ?, ?, '', ?, 1, ?, ?)
+            ?, ?, ?, '', ?, 1, ?, ?, ?)
   `,
   ).run(
     id,
@@ -218,6 +284,7 @@ export function indexKnowledgeFile(
     slug,
     title,
     content.length,
+    provider,
     now,
     now,
   );
@@ -262,29 +329,54 @@ export function indexFile(
   const mtime = stat.mtime.toISOString();
   const fileName = path.basename(filePath);
   const resolvedType = fileType || classifyFileType(filePath);
+  const provider = inferInstructionProvider(filePath);
 
   const db = getDb();
 
   // Check if already indexed
   const existing = db
     .prepare(
-      "SELECT id, file_mtime, content_hash, project_id FROM instruction_files WHERE file_path = ?",
+      "SELECT id, file_mtime, content_hash, project_id, provider FROM instruction_files WHERE file_path = ?",
     )
     .get(filePath) as
-    | { id: string; file_mtime: string | null; content_hash: string | null; project_id: string | null }
+    | {
+        id: string;
+        file_mtime: string | null;
+        content_hash: string | null;
+        project_id: string | null;
+        provider: string | null;
+      }
     | undefined;
 
   if (existing) {
     // Backfill project_id if it was missing but now available
-    // Don't upgrade global entries (under ~/.claude/) to project-scoped
-    if (projectId && !existing.project_id && !filePath.startsWith(CLAUDE_DIR + "/")) {
-      db.prepare(
-        "UPDATE instruction_files SET project_id = ?, project_path = ? WHERE id = ?",
-      ).run(projectId, projectPath, existing.id);
+    // Don't upgrade global entries to project-scoped.
+    const shouldBackfillProject =
+      !!projectId && !existing.project_id && !isGlobalInstructionPath(filePath);
+    const existingProvider = (existing.provider as ConfigProvider | null) ?? "claude";
+    const providerChanged = existingProvider !== provider;
+    if (shouldBackfillProject || providerChanged) {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (shouldBackfillProject) {
+        sets.push("project_id = ?", "project_path = ?");
+        params.push(projectId, projectPath);
+      }
+      if (providerChanged) {
+        sets.push("provider = ?");
+        params.push(provider);
+      }
+      if (sets.length > 0) {
+        sets.push("last_indexed_at = ?");
+        params.push(new Date().toISOString(), existing.id);
+        db.prepare(
+          `UPDATE instruction_files SET ${sets.join(", ")} WHERE id = ?`,
+        ).run(...params);
+      }
     }
 
     // Fast path: mtime unchanged → skip
-    if (existing.file_mtime === mtime) return false;
+    if (existing.file_mtime === mtime) return shouldBackfillProject || providerChanged;
 
     // Mtime changed → read and check hash
     const content = fs.readFileSync(filePath, "utf-8");
@@ -292,9 +384,9 @@ export function indexFile(
     if (existing.content_hash === hash) {
       // Content same, just update mtime
       db.prepare(
-        "UPDATE instruction_files SET file_mtime = ?, last_indexed_at = ? WHERE id = ?",
-      ).run(mtime, new Date().toISOString(), existing.id);
-      return false;
+        "UPDATE instruction_files SET file_mtime = ?, last_indexed_at = ?, provider = ? WHERE id = ?",
+      ).run(mtime, new Date().toISOString(), provider, existing.id);
+      return shouldBackfillProject || providerChanged;
     }
 
     // Content changed — update
@@ -303,7 +395,7 @@ export function indexFile(
       `
       UPDATE instruction_files
       SET content = ?, content_hash = ?, token_count = ?, file_mtime = ?,
-          last_indexed_at = ?, updated_at = ?, project_id = ?, project_path = ?
+          last_indexed_at = ?, updated_at = ?, project_id = ?, project_path = ?, provider = ?
       WHERE id = ?
     `,
     ).run(
@@ -315,6 +407,7 @@ export function indexFile(
       now,
       projectId,
       projectPath,
+      provider,
       existing.id,
     );
     return true;
@@ -339,8 +432,8 @@ export function indexFile(
     `
     INSERT INTO instruction_files
       (id, file_path, file_type, project_path, project_id, file_name, content, content_hash,
-       token_count, is_editable, is_active, last_indexed_at, file_mtime, source, tags, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', '[]', ?, ?)
+       token_count, is_editable, is_active, last_indexed_at, file_mtime, source, tags, provider, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', '[]', ?, ?, ?)
   `,
   ).run(
     id,
@@ -356,6 +449,7 @@ export function indexFile(
     isActive ? 1 : 0,
     now,
     mtime,
+    provider,
     now,
     now,
   );

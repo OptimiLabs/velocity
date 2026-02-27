@@ -235,7 +235,7 @@ export const COMMAND_REGISTRY: CommandDef[] = [
     name: "context",
     description: "Show token usage breakdown",
     details:
-      "Displays how much of Claude's context window is currently in use, broken down by conversation history, system prompts, tool results, and other components. Helps you decide when to /compact.",
+      "Shows current context window usage when runtime token telemetry is available, plus indexed instruction-file candidates for the active project/provider scope.",
     category: "info",
     handler: "client",
   },

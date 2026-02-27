@@ -2,6 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { SplitResult } from "@/lib/instructions/claudemd-splitter";
 import type { AISplitAssignment } from "@/lib/instructions/ai-split-planner";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 export function useAnalyzeSplit() {
   return useMutation({
@@ -65,16 +71,40 @@ export function useAISplit() {
       existingCategories?: string[];
       provider?: string;
     }): Promise<SplitResult & { aiAssignments: AISplitAssignment[]; aiFailed?: boolean }> => {
-      const res = await fetch("/api/instructions/split", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "ai-split", ...data }),
+      const jobId = startProcessingJob({
+        title: "Organize instructions with AI",
+        subtitle: summarizeForJob(data.filePath),
+        source: "instructions",
+        provider: data.provider,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "AI split failed" }));
-        throw new Error(err.error || "AI split failed");
+      try {
+        const res = await fetch("/api/instructions/split", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "ai-split", ...data }),
+        });
+        if (!res.ok) {
+          const err = await res
+            .json()
+            .catch(() => ({ error: "AI split failed" }));
+          throw new Error(err.error || "AI split failed");
+        }
+        const result = (await res.json()) as SplitResult & {
+          aiAssignments: AISplitAssignment[];
+          aiFailed?: boolean;
+        };
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(
+            `${result.aiAssignments?.length ?? 0} AI assignments`,
+          ),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(data.filePath),
+        });
+        throw error;
       }
-      return res.json();
     },
     onError: () => toast.error("AI organization failed"),
   });

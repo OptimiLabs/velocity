@@ -26,9 +26,11 @@ export async function GET(request: Request) {
       COUNT(*) as sessionCount,
       SUM(message_count) as messageCount, SUM(total_cost) as totalCost,
       SUM(input_tokens) as inputTokens, SUM(output_tokens) as outputTokens,
-      SUM(cache_read_tokens) as cacheReadTokens
+      SUM(cache_read_tokens) as cacheReadTokens,
+      SUM(cache_write_tokens) as cacheWriteTokens
     FROM sessions
     WHERE created_at >= ? AND created_at < ?
+      AND message_count > 0
     ${filterSql}
     GROUP BY CASE WHEN session_role = 'subagent' THEN 'subagent' ELSE 'standalone' END
   `,
@@ -41,6 +43,7 @@ export async function GET(request: Request) {
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
+    cacheWriteTokens: number;
   }[];
 
   // 2. Daily by role (for stacked chart)
@@ -52,6 +55,7 @@ export async function GET(request: Request) {
       SUM(total_cost) as totalCost, COUNT(*) as sessionCount
     FROM sessions
     WHERE created_at >= ? AND created_at < ?
+      AND message_count > 0
     ${filterSql}
     GROUP BY DATE(created_at), CASE WHEN session_role = 'subagent' THEN 'subagent' ELSE 'standalone' END
     ORDER BY date ASC
@@ -111,6 +115,7 @@ export async function GET(request: Request) {
     FROM sessions
     WHERE session_role = 'subagent'
       AND created_at >= ? AND created_at < ?
+      AND message_count > 0
     ${filterSql}
     GROUP BY COALESCE(subagent_type, 'unknown')
     ORDER BY totalCost DESC

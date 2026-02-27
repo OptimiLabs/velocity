@@ -18,7 +18,6 @@ import { saveCodexInstruction } from "@/lib/codex/skills";
 import { saveGeminiSkill } from "@/lib/gemini/skills";
 import { normalizeMarketplaceInstallName } from "@/lib/marketplace/install-names";
 import {
-  removeMarketplacePluginEntry,
   upsertMarketplacePluginEntry,
 } from "@/lib/marketplace/installed-plugins";
 import matter from "gray-matter";
@@ -361,15 +360,6 @@ function trackPluginInstall(
     mcpServers: result.mcpServers,
     disabled: false,
   });
-}
-
-/** Remove tracking entry on uninstall */
-export function trackPluginUninstall(
-  name: string,
-  targetProvider: ConfigProvider = "claude",
-  marketplaceRepo?: string,
-) {
-  removeMarketplacePluginEntry({ name, targetProvider, marketplaceRepo });
 }
 
 // --- Install logic (runs in background) ---

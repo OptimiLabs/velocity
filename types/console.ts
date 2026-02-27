@@ -1,9 +1,12 @@
+import type { ConfigProvider } from "./provider";
+
 export interface ConsoleSession {
   id: string; // consoleSessionId (UUID)
   label: string;
   cwd: string;
   status: "active" | "idle";
   kind?: "claude" | "shell";
+  provider?: ConfigProvider;
   createdAt: number;
   lastActivityAt?: number; // last interaction timestamp
   claudeSessionId?: string; // Claude's session ID for resume
@@ -58,6 +61,7 @@ export interface TerminalMeta {
   exitCode?: number; // from pty:exit
   exitedAt?: number; // timestamp when process exited
   restartCount?: number; // how many times user restarted this terminal
+  sidePanel?: "context" | "settings"; // per-terminal right panel in tabbed mode
 }
 
 // --- Tiling Window Manager Types ---
@@ -79,4 +83,3 @@ export type PaneNode =
       children: [PaneNode, PaneNode];
       sizes?: [number, number];
     };
-

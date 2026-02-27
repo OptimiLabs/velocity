@@ -6,6 +6,12 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Session, TaskSession, ScopeOptions } from "@/types/session";
+import {
+  completeProcessingJob,
+  failProcessingJob,
+  startProcessingJob,
+  summarizeForJob,
+} from "@/lib/processing/jobs";
 
 export interface CompareResult {
   analysis: string;
@@ -52,24 +58,43 @@ export function useComparePreview() {
       scope?: ScopeOptions;
       model?: CompareModel;
     }): Promise<ComparePreview> => {
-      const res = await fetch("/api/sessions/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionIds,
-          question,
-          preset,
-          scope,
-          preview: true,
-          provider: model,
-        }),
-        signal: AbortSignal.timeout(150_000),
+      const jobId = startProcessingJob({
+        title: "Estimate session comparison",
+        subtitle: summarizeForJob(question || preset || `${sessionIds.length} sessions`),
+        source: "sessions",
+        provider: model,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Preview failed");
+      try {
+        const res = await fetch("/api/sessions/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionIds,
+            question,
+            preset,
+            scope,
+            preview: true,
+            provider: model,
+          }),
+          signal: AbortSignal.timeout(150_000),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Preview failed");
+        }
+        const result = (await res.json()) as ComparePreview;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(
+            `~${Math.round(result.estimatedCost * 100) / 100} est. cost`,
+          ),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(question || preset || `${sessionIds.length} sessions`),
+        });
+        throw error;
       }
-      return res.json();
     },
   });
 }
@@ -91,23 +116,42 @@ export function useCompareSessions() {
       model?: CompareModel;
       scope?: ScopeOptions;
     }): Promise<CompareResult> => {
-      const res = await fetch("/api/sessions/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionIds,
-          question,
-          preset,
-          provider: model || provider,
-          scope,
-        }),
-        signal: AbortSignal.timeout(150_000),
+      const jobId = startProcessingJob({
+        title: "Compare sessions",
+        subtitle: summarizeForJob(question || preset || `${sessionIds.length} sessions`),
+        source: "sessions",
+        provider: model || provider,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Comparison failed");
+      try {
+        const res = await fetch("/api/sessions/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionIds,
+            question,
+            preset,
+            provider: model || provider,
+            scope,
+          }),
+          signal: AbortSignal.timeout(150_000),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Comparison failed");
+        }
+        const result = (await res.json()) as CompareResult;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(
+            `${Math.round(result.tokensUsed || 0).toLocaleString()} tokens`,
+          ),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(question || preset || `${sessionIds.length} sessions`),
+        });
+        throw error;
       }
-      return res.json();
     },
     onError: (err: Error) => {
       toast.error(err.message);
@@ -124,22 +168,49 @@ export function useCompareChat() {
       model?: CompareModel;
       messages: Array<{ role: string; content: string }>;
     }): Promise<CompareResult> => {
-      const res = await fetch("/api/sessions/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionIds: request.sessionIds,
-          scope: request.scope,
-          provider: request.model || request.provider,
-          messages: request.messages,
-        }),
-        signal: AbortSignal.timeout(150_000),
+      const latestPrompt = request.messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "user")?.content;
+      const jobId = startProcessingJob({
+        title: "Continue comparison chat",
+        subtitle: summarizeForJob(
+          latestPrompt || `${request.sessionIds.length} sessions`,
+        ),
+        source: "sessions",
+        provider: request.model || request.provider,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Comparison failed");
+      try {
+        const res = await fetch("/api/sessions/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionIds: request.sessionIds,
+            scope: request.scope,
+            provider: request.model || request.provider,
+            messages: request.messages,
+          }),
+          signal: AbortSignal.timeout(150_000),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Comparison failed");
+        }
+        const result = (await res.json()) as CompareResult;
+        completeProcessingJob(jobId, {
+          subtitle: summarizeForJob(
+            `${Math.round(result.tokensUsed || 0).toLocaleString()} tokens`,
+          ),
+        });
+        return result;
+      } catch (error) {
+        failProcessingJob(jobId, error, {
+          subtitle: summarizeForJob(
+            latestPrompt || `${request.sessionIds.length} sessions`,
+          ),
+        });
+        throw error;
       }
-      return res.json();
     },
     onError: (err: Error) => {
       toast.error(err.message);
