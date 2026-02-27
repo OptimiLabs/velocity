@@ -140,6 +140,10 @@ Optional remote calls are limited to explicit user-driven actions (for example m
 
 See [SECURITY.md](SECURITY.md) for reporting and policy details.
 
+## Inquiries
+
+For questions or inquiries, contact: `jaewonlee9642@gmail.com`
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and PR workflow.
