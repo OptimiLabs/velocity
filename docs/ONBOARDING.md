@@ -10,14 +10,15 @@
 # 1. Clone
 git clone <repo-url> && cd claude-best
 
-# 2. Start dev server (launches Next.js on :3000 + WebSocket on :3001)
+# 2. Install dependencies
+bun install
+
+# 3. Start dev server (launches Next.js on :3000 + WebSocket on :3001)
 bun dev
 
-# 3. Open in browser
+# 4. Open in browser
 open http://localhost:3000
 ```
-
-`bun dev` bootstraps dependencies automatically and only installs when needed.
 
 No database setup, no env vars, no external services. SQLite auto-initializes at `~/.claude/dashboard.db` on first request.
 

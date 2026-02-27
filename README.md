@@ -60,11 +60,9 @@ python3 scripts/demo/capture-demos.py --base-url http://127.0.0.1:3000 --provide
 ```bash
 git clone https://github.com/OptimiLabs/velocity.git
 cd velocity
+bun install
 bun dev
 ```
-
-`bun dev` bootstraps dependencies automatically. It only runs `bun install` when
-`node_modules` is missing or dependency inputs changed.
 
 Open [http://localhost:3000](http://localhost:3000).
 
