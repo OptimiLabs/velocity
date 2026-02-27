@@ -738,6 +738,206 @@ function getCacheKey(
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
+function normalizeUrlForDedup(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    parsed.search = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+    return parsed.toString();
+  } catch {
+    return url.trim().replace(/\/+$/, "");
+  }
+}
+
+function getRepoIdentity(item: MarketplaceItem): string | null {
+  if (item.marketplaceRepo) {
+    return item.marketplaceRepo.trim().toLowerCase();
+  }
+  if (item.repo?.owner && item.repo?.name) {
+    return `${item.repo.owner}/${item.repo.name}`.toLowerCase();
+  }
+  const match = item.url.match(/github\.com\/([^/]+)\/([^/?#]+)/i);
+  if (!match) return null;
+  return `${match[1]}/${match[2].replace(/\.git$/i, "")}`.toLowerCase();
+}
+
+function getDedupKey(item: MarketplaceItem): string {
+  const name = item.name.trim().toLowerCase();
+  const repoId = getRepoIdentity(item);
+  const sourcePath = (item.sourcePath || "").trim().toLowerCase();
+  if (item.type === "marketplace-plugin") {
+    if (repoId) {
+      return `marketplace-plugin:${repoId}:${sourcePath || "__root"}`;
+    }
+    return `marketplace-plugin:url:${normalizeUrlForDedup(item.url)}:${sourcePath || name}`;
+  }
+  if (repoId) return `${item.type}:repo:${repoId}:${sourcePath || name}`;
+  return `${item.type}:url:${normalizeUrlForDedup(item.url)}:${sourcePath || name}`;
+}
+
+function componentTotal(
+  components: MarketplaceItem["components"] | undefined,
+): number {
+  if (!components) return 0;
+  return (
+    (components.agents || 0) +
+    (components.skills || 0) +
+    (components.commands || 0)
+  );
+}
+
+function mergeComponents(
+  a: MarketplaceItem["components"] | undefined,
+  b: MarketplaceItem["components"] | undefined,
+): MarketplaceItem["components"] | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    agents: Math.max(a.agents || 0, b.agents || 0),
+    skills: Math.max(a.skills || 0, b.skills || 0),
+    commands: Math.max(a.commands || 0, b.commands || 0),
+  };
+}
+
+function itemQuality(item: MarketplaceItem): number {
+  let score = 0;
+  score += componentTotal(item.components) * 100;
+  if (item.componentSelectionSupported) score += 50;
+  if (item.sourcePath) score += 25;
+  if (item.defaultBranch) score += 10;
+  if (item.repo) score += 10;
+  if (item.installConfig) score += 8;
+  if (item.estimatedTokens) score += 6;
+  if (item.stars) score += Math.min(item.stars, 100_000) / 100_000;
+  if (item.description?.trim()) {
+    score += Math.min(item.description.trim().length, 200) / 200;
+  }
+  return score;
+}
+
+function mergeMarketplaceItem(
+  current: MarketplaceItem,
+  incoming: MarketplaceItem,
+): MarketplaceItem {
+  const preferIncoming = itemQuality(incoming) > itemQuality(current);
+  const base = preferIncoming ? incoming : current;
+  const other = preferIncoming ? current : incoming;
+
+  const mergedDescription =
+    (incoming.description?.trim().length || 0) >
+    (current.description?.trim().length || 0)
+      ? incoming.description
+      : current.description;
+
+  const estimatedTokens = Math.max(
+    current.estimatedTokens ?? 0,
+    incoming.estimatedTokens ?? 0,
+  );
+  const stars = Math.max(current.stars ?? 0, incoming.stars ?? 0);
+
+  return {
+    ...base,
+    description: mergedDescription,
+    installed: current.installed || incoming.installed,
+    disabled:
+      current.disabled === true || incoming.disabled === true
+        ? true
+        : current.disabled === false || incoming.disabled === false
+          ? false
+          : undefined,
+    recommended: Boolean(current.recommended || incoming.recommended),
+    sourceId: base.sourceId || other.sourceId,
+    marketplaceRepo: base.marketplaceRepo ?? other.marketplaceRepo,
+    category: base.category ?? other.category,
+    installConfig: base.installConfig ?? other.installConfig,
+    components: mergeComponents(current.components, incoming.components),
+    componentSelectionSupported: Boolean(
+      current.componentSelectionSupported || incoming.componentSelectionSupported,
+    ),
+    repo: base.repo ?? other.repo,
+    defaultBranch: base.defaultBranch ?? other.defaultBranch,
+    sourcePath: base.sourcePath ?? other.sourcePath,
+    skillContent: base.skillContent ?? other.skillContent,
+    hookConfig: base.hookConfig ?? other.hookConfig,
+    estimatedTokens: estimatedTokens > 0 ? estimatedTokens : undefined,
+    stars: stars > 0 ? stars : undefined,
+  };
+}
+
+export function dedupeMarketplaceItems(items: MarketplaceItem[]): MarketplaceItem[] {
+  const byKey = new Map<string, MarketplaceItem>();
+  for (const item of items) {
+    const key = getDedupKey(item);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, item);
+      continue;
+    }
+    byKey.set(key, mergeMarketplaceItem(existing, item));
+  }
+  return Array.from(byKey.values());
+}
+
+export async function enrichRecommendedComponentCounts(
+  items: MarketplaceItem[],
+): Promise<MarketplaceItem[]> {
+  const targets = items.filter(
+    (item) =>
+      item.recommended &&
+      item.type === "marketplace-plugin" &&
+      item.repo &&
+      componentTotal(item.components) === 0,
+  );
+  if (targets.length === 0) return items;
+
+  const byKey = new Map<
+    string,
+    { counts: { agents: number; skills: number; commands: number }; defaultBranch?: string }
+  >();
+
+  await Promise.all(
+    targets.map(async (item) => {
+      const repo = item.repo;
+      if (!repo) return;
+      try {
+        const summary = await summarizeRepoComponents(
+          repo.owner,
+          repo.name,
+          item.defaultBranch,
+        );
+        if (!summary) return;
+        const counts = {
+          agents: summary.components.filter((c) => c.kind === "agent").length,
+          skills: summary.components.filter((c) => c.kind === "skill").length,
+          commands: summary.components.filter((c) => c.kind === "command").length,
+        };
+        if (counts.agents + counts.skills + counts.commands === 0) return;
+        byKey.set(getDedupKey(item), {
+          counts,
+          defaultBranch: summary.repo.defaultBranch,
+        });
+      } catch (err) {
+        apiLog.debug("failed to enrich curated component counts", err);
+      }
+    }),
+  );
+
+  if (byKey.size === 0) return items;
+
+  return items.map((item) => {
+    const enriched = byKey.get(getDedupKey(item));
+    if (!enriched) return item;
+    return {
+      ...item,
+      components: mergeComponents(item.components, enriched.counts),
+      componentSelectionSupported:
+        item.componentSelectionSupported ?? true,
+      defaultBranch: item.defaultBranch ?? enriched.defaultBranch,
+    };
+  });
+}
+
 function readCache(
   db: ReturnType<typeof getDb>,
   key: string,
@@ -846,13 +1046,8 @@ async function fetchFromSources(
   const builtinHooks = getBuiltinHookItems(query, typeFilter, settings.hooks as RawHooks | undefined);
   allResults.unshift(...builtinHooks);
 
-  // Deduplicate by url
-  const seen = new Set<string>();
-  return allResults.filter((r) => {
-    if (seen.has(r.url)) return false;
-    seen.add(r.url);
-    return true;
-  });
+  const deduped = dedupeMarketplaceItems(allResults);
+  return enrichRecommendedComponentCounts(deduped);
 }
 
 export async function GET(request: NextRequest) {

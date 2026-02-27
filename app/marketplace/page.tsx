@@ -309,8 +309,10 @@ function MarketplacePageContent() {
   const togglePkg = useTogglePackage();
 
   const getItemKey = useCallback((item: MarketplaceItem) => {
-    if (item.marketplaceRepo) return `${item.marketplaceRepo}:${item.name}`;
-    return item.url || item.name;
+    const base = item.marketplaceRepo
+      ? `${item.marketplaceRepo}:${item.name}`
+      : item.url || item.name;
+    return `${item.type}:${base}:${item.sourcePath || ""}`;
   }, []);
 
   const canInstallInScope = useCallback(

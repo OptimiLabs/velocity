@@ -157,7 +157,7 @@ function ListTable({
 
         return (
           <div
-            key={item.url}
+            key={getKey(item)}
             className={`flex items-center gap-3 px-4 py-2.5 hover:bg-muted/20 transition-colors group${detailable ? " cursor-pointer" : ""}${selected ? " bg-primary/5" : ""}`}
             onClick={() => {
               if (detailable) onDetails?.(item);

@@ -8,6 +8,10 @@ const saveCodexInstructionMock = vi.fn();
 const saveGeminiSkillMock = vi.fn();
 const fullScanMock = vi.fn();
 const invalidateMarketplaceCacheMock = vi.fn();
+const parseGitHubUrlMock = vi.fn();
+const discoverRepoMock = vi.fn();
+const fetchWithTimeoutMock = vi.fn();
+const syncProviderAgentRegistryMock = vi.fn();
 
 vi.mock("fs", () => ({
   mkdirSync: mkdirSyncMock,
@@ -32,6 +36,16 @@ vi.mock("@/lib/gemini/paths", () => ({
 vi.mock("@/lib/claude-settings", () => ({
   readSettings: vi.fn(() => ({})),
   writeSettings: vi.fn(),
+}));
+
+vi.mock("@/lib/marketplace/repo-tree", () => ({
+  parseGitHubUrl: parseGitHubUrlMock,
+  discoverRepo: discoverRepoMock,
+}));
+
+vi.mock("@/lib/marketplace/fetch-utils", () => ({
+  toRawBase: vi.fn((url: string) => url),
+  fetchWithTimeout: fetchWithTimeoutMock,
 }));
 
 vi.mock("@/lib/codex/skills", () => ({
@@ -62,7 +76,7 @@ vi.mock("@/app/api/marketplace/search/route", () => ({
 }));
 
 vi.mock("@/lib/providers/agent-files", () => ({
-  syncProviderAgentRegistry: vi.fn(),
+  syncProviderAgentRegistry: syncProviderAgentRegistryMock,
 }));
 
 vi.mock("@/lib/providers/mcp-settings", () => ({
@@ -205,6 +219,93 @@ describe("POST /api/marketplace/install provider parity", () => {
       "Do gemini work\n",
     );
     expect(saveCodexInstructionMock).not.toHaveBeenCalled();
+  });
+
+  it("installs only selected marketplace-plugin components", async () => {
+    parseGitHubUrlMock.mockReturnValue({
+      owner: "acme",
+      repo: "tools",
+      branch: "main",
+      subpath: "",
+    });
+    discoverRepoMock.mockResolvedValue({
+      components: [
+        {
+          kind: "agent",
+          name: "reviewer",
+          primaryPath: "agents/reviewer.md",
+          contextDir: "agents",
+        },
+        {
+          kind: "agent",
+          name: "planner",
+          primaryPath: "agents/planner.md",
+          contextDir: "agents",
+        },
+        {
+          kind: "skill",
+          name: "qa",
+          primaryPath: "skills/qa/SKILL.md",
+          contextDir: "skills/qa",
+        },
+      ],
+    });
+    fetchWithTimeoutMock.mockImplementation((url: string) => {
+      if (url.endsWith("/README.md")) {
+        return Promise.resolve({
+          ok: false,
+          text: async () => "",
+          json: async () => ({}),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        text: async () => "# agent",
+        json: async () => ({}),
+      });
+    });
+
+    const { POST, GET } = await import("@/app/api/marketplace/install/route");
+
+    const req = new Request("http://localhost/api/marketplace/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "marketplace-plugin",
+        url: "https://github.com/acme/tools",
+        name: "tools",
+        targetProvider: "claude",
+        config: {
+          components: [
+            { primaryPath: "agents/reviewer.md", name: "reviewer" },
+          ],
+        },
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const job = await waitForInstallJob(GET, body.jobId);
+    expect(job.status).toBe("completed");
+    expect(job.result).toMatchObject({
+      targetProvider: "claude",
+      agents: ["reviewer.md"],
+      skills: [],
+      commands: [],
+    });
+
+    expect(writeFileSyncMock).toHaveBeenCalledWith(
+      "/tmp/test/.claude/agents/reviewer.md",
+      "# agent",
+      "utf-8",
+    );
+    expect(writeFileSyncMock).not.toHaveBeenCalledWith(
+      "/tmp/test/.claude/agents/planner.md",
+      expect.anything(),
+      "utf-8",
+    );
+    expect(syncProviderAgentRegistryMock).toHaveBeenCalled();
   });
 
   it("rejects unsupported provider/type combinations", async () => {
