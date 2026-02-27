@@ -20,6 +20,12 @@ bun dev
 open http://localhost:3000
 ```
 
+If PTY launch fails on macOS during setup, run:
+
+```bash
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
 No database setup, no env vars, no external services. SQLite auto-initializes at `~/.claude/dashboard.db` on first request.
 
 ---

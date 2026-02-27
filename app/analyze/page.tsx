@@ -133,7 +133,7 @@ function AnalyzePageContent() {
                           {session.message_count}
                         </span>
                         <span>{formatCost(session.total_cost)}</span>
-                        <span>
+                        <span suppressHydrationWarning>
                           {formatDistanceToNow(new Date(session.modified_at), {
                             addSuffix: true,
                           })}

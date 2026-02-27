@@ -209,6 +209,7 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
   const [reindexMode, setReindexMode] = useState<"incremental" | "rebuild" | "nuke">("incremental");
   const [blockPopoverOpen, setBlockPopoverOpen] = useState(false);
   const [processingPopoverOpen, setProcessingPopoverOpen] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const [jobClockNow, setJobClockNow] = useState(() => Date.now());
   const isUsageRoute = pathname.startsWith("/usage");
   const shouldLoadUsageDetails = blockPopoverOpen;
@@ -232,6 +233,10 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
   const weekStartDay = weekSettings?.statuslineWeekStartDay ?? 0;
   const weekStartHour = weekSettings?.statuslineWeekStartHour ?? 0;
   const selectedUsageProviderLabel = getUsageProviderLabel(selectedUsageProvider);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -981,13 +986,17 @@ export function Header({ collapsed, onToggleCollapse }: HeaderProps) {
           {stats?.lastIndexedAt && (
             <span
               className="hidden text-xs font-mono text-muted-foreground lg:inline"
-              title={new Date(stats.lastIndexedAt).toString()}
+              title={stats.lastIndexedAt}
             >
               indexed{" "}
-              {new Date(stats.lastIndexedAt).toLocaleTimeString([], {
-                hour: "numeric",
-                minute: "2-digit",
-              })}
+              <span suppressHydrationWarning>
+                {isHydrated
+                  ? new Date(stats.lastIndexedAt).toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })
+                  : "--:--"}
+              </span>
             </span>
           )}
           <div className="flex items-center">

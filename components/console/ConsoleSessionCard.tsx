@@ -35,6 +35,7 @@ export function ConsoleSessionCard({
 }: ConsoleSessionCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(session.label);
+  const [nowMs, setNowMs] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus input when editing starts
@@ -44,6 +45,13 @@ export function ConsoleSessionCard({
       inputRef.current.select();
     }
   }, [isEditing]);
+
+  useEffect(() => {
+    const tick = () => setNowMs(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleStartEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -79,7 +87,7 @@ export function ConsoleSessionCard({
 
   const timeAgo = (() => {
     const ts = session.lastActivityAt ?? session.createdAt;
-    const diff = Date.now() - ts;
+    const diff = (nowMs ?? ts) - ts;
     const secs = Math.floor(diff / 1000);
     if (secs < 60) return "now";
     const mins = Math.floor(secs / 60);
@@ -153,7 +161,7 @@ export function ConsoleSessionCard({
           className="text-[10px] text-text-quaternary font-mono ml-auto shrink-0"
           title={new Date(
             session.lastActivityAt ?? session.createdAt,
-          ).toLocaleString()}
+          ).toISOString()}
         >
           {timeAgo}
         </span>

@@ -72,6 +72,16 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
   } = props;
   const layoutGroups = useConsoleLayoutStore((s) => s.groups);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  const safeGroups = isHydrated ? groups : [];
+  const safeSessions = isHydrated ? sessions : [];
+  const safeActiveId = isHydrated ? activeId : null;
+  const safeActiveGroupId = isHydrated ? activeGroupId : null;
 
   const isTerminalOpen = (terminalState?: string) =>
     terminalState !== "exited" && terminalState !== "dead";
@@ -84,11 +94,11 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
       { sessionCount: number; terminalCount: number; hasActivity: boolean }
     > = {};
     const sessionCounts: Record<string, number> = {};
-    for (const session of sessions) {
+    for (const session of safeSessions) {
       if (!session.groupId) continue;
       sessionCounts[session.groupId] = (sessionCounts[session.groupId] ?? 0) + 1;
     }
-    for (const group of groups) {
+    for (const group of safeGroups) {
       const groupState = layoutGroups[group.id];
       if (groupState) {
         const terminals = Object.values(groupState.terminals);
@@ -107,9 +117,9 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
       }
     }
     return stats;
-  }, [groups, layoutGroups, sessions]);
+  }, [layoutGroups, safeGroups, safeSessions]);
 
-  const totalSessionCount = sessions.length;
+  const totalSessionCount = safeSessions.length;
   const openTerminalCount = useMemo(() => {
     let count = 0;
     for (const group of Object.values(layoutGroups)) {
@@ -137,7 +147,7 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
 
   const sessionsByGroup = useMemo(() => {
     const grouped = new Map<string, ConsoleSession[]>();
-    for (const session of sessions) {
+    for (const session of safeSessions) {
       if (!session.groupId) continue;
       const existing = grouped.get(session.groupId) ?? [];
       existing.push(session);
@@ -153,7 +163,7 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
       );
     }
     return grouped;
-  }, [sessions]);
+  }, [safeSessions]);
 
   const formatCountLabel = (
     count: number,
@@ -237,7 +247,7 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
           </Button>
         )}
         <div className="flex-1 flex flex-col items-center gap-0.5 pt-1 overflow-y-auto min-h-0">
-          {groups.map((g) => {
+          {safeGroups.map((g) => {
             const stats = groupStats[g.id];
             return (
               <button
@@ -246,7 +256,7 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
                 title={`${g.label} (${stats?.sessionCount ?? 0} sessions, ${stats?.terminalCount ?? 0} terminals)`}
                 className={cn(
                   "relative w-8 h-8 rounded-md flex items-center justify-center text-micro font-mono font-medium transition-all shrink-0 group",
-                  g.id === activeGroupId
+                  g.id === safeActiveGroupId
                     ? "bg-primary/15 text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
@@ -299,9 +309,10 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
           <span className="truncate">{compact ? "New" : "New Workspace"}</span>
           <span
             className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums"
-            title={`${groups.length} workspaces`}
+            title={`${safeGroups.length} workspaces`}
+            suppressHydrationWarning
           >
-            {groups.length}
+            {safeGroups.length}
           </span>
         </Button>
         {onOpenArchive && (
@@ -335,14 +346,14 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
         title="Sessions can exist without an open terminal if they are idle or ended."
       >
         {compact
-          ? `${groups.length} ws · ${totalSessionCount} sess · ${openTerminalCount} open`
-          : `${groups.length} workspaces · ${totalSessionCount} sessions · ${openTerminalCount} open terminals`}
+          ? `${safeGroups.length} ws · ${totalSessionCount} sess · ${openTerminalCount} open`
+          : `${safeGroups.length} workspaces · ${totalSessionCount} sessions · ${openTerminalCount} open terminals`}
       </div>
 
       {/* Workspace list (folders first; sessions on explicit expand) */}
       <ScrollArea className="flex-1 min-h-0">
         <div className={cn(compact ? "p-1.5 space-y-0.5" : "p-2 space-y-0.5")}>
-          {groups.length === 0 ? (
+          {safeGroups.length === 0 ? (
             <div className="px-3 py-8 text-center">
               <Terminal
                 size={20}
@@ -356,8 +367,8 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
               </div>
             </div>
           ) : (
-            groups.map((group) => {
-              const isActive = group.id === activeGroupId;
+            safeGroups.map((group) => {
+              const isActive = group.id === safeActiveGroupId;
               const stats = groupStats[group.id];
               const groupSessions = sessionsByGroup.get(group.id) ?? [];
               const isExpanded = expandedGroupId === group.id;
@@ -492,7 +503,7 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
                             key={session.id}
                             className={cn(
                               "group/session flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] cursor-pointer transition-colors",
-                              session.id === activeId
+                              session.id === safeActiveId
                                 ? "bg-primary/10 text-primary"
                                 : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
                             )}
@@ -542,10 +553,10 @@ export function ConsoleSidebar(props: ConsoleSidebarProps) {
           )}
         </div>
       </ScrollArea>
-      {onClearAllSessions && groups.length > 0 && (
+      {onClearAllSessions && safeGroups.length > 0 && (
         <div className="border-t border-border/70 p-2">
           <ClearAllWorkspacesButton
-            count={groups.length}
+            count={safeGroups.length}
             onClearAll={onClearAllSessions}
           />
         </div>

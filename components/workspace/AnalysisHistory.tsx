@@ -130,9 +130,11 @@ export function AnalysisHistory({ embedded = false }: { embedded?: boolean }) {
                       : "\u2014"}
                   </td>
                   <td className="py-2.5 px-3 text-right text-muted-foreground whitespace-nowrap">
-                    {formatDistanceToNow(new Date(conv.updatedAt), {
-                      addSuffix: true,
-                    })}
+                    <span suppressHydrationWarning>
+                      {formatDistanceToNow(new Date(conv.updatedAt), {
+                        addSuffix: true,
+                      })}
+                    </span>
                   </td>
                   <td className="px-1 py-2">
                     <button

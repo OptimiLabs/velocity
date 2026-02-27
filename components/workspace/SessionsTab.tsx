@@ -832,15 +832,14 @@ export function SessionsTab({ onSummaryMetricsChange }: SessionsTabProps) {
                                 </span>
                                 <span
                                   className="text-meta whitespace-nowrap"
-                                  title={format(
-                                    new Date(session.modified_at),
-                                    "MMM d, yyyy h:mm a",
-                                  )}
+                                  title={new Date(session.modified_at).toISOString()}
                                 >
-                                  {formatDistanceToNow(
-                                    new Date(session.modified_at),
-                                    { addSuffix: true },
-                                  )}
+                                  <span suppressHydrationWarning>
+                                    {formatDistanceToNow(
+                                      new Date(session.modified_at),
+                                      { addSuffix: true },
+                                    )}
+                                  </span>
                                 </span>
                               </div>
                               {truncated && (

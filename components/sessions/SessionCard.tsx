@@ -2,7 +2,7 @@
 
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { format, formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -43,10 +43,7 @@ export function SessionCard({ session, selected, onToggleSelect }: SessionCardPr
   const timeAgo = formatDistanceToNow(new Date(session.modified_at), {
     addSuffix: true,
   });
-  const absoluteTime = format(
-    new Date(session.modified_at),
-    "MMM d, yyyy h:mm a",
-  );
+  const absoluteTime = new Date(session.modified_at).toISOString();
   const router = useRouter();
   const { confirm } = useConfirm();
   const compressSession = useCompressSession();
@@ -205,7 +202,11 @@ export function SessionCard({ session, selected, onToggleSelect }: SessionCardPr
               <span className="text-sm font-semibold text-foreground tabular-nums">
                 {formatCost(session.total_cost)}
               </span>
-              <span className="text-xs text-muted-foreground/60 tabular-nums" title={absoluteTime}>
+              <span
+                className="text-xs text-muted-foreground/60 tabular-nums"
+                title={absoluteTime}
+                suppressHydrationWarning
+              >
                 {timeAgo}
               </span>
             </div>

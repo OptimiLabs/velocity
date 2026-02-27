@@ -90,7 +90,7 @@ function SessionRow({
             <span className="font-medium text-foreground">
               {formatCost(session.total_cost)}
             </span>
-            <span>
+            <span suppressHydrationWarning>
               {formatDistanceToNow(new Date(session.modified_at), {
                 addSuffix: true,
               })}

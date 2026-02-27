@@ -164,7 +164,7 @@ function ChildRow({
       <span className="text-muted-foreground tabular-nums">
         {formatTokens(child.input_tokens + child.output_tokens)} tok
       </span>
-      <span className="text-muted-foreground/50 ml-auto">
+      <span className="text-muted-foreground/50 ml-auto" suppressHydrationWarning>
         {formatDistanceToNow(new Date(child.created_at), { addSuffix: true })}
       </span>
     </Link>
@@ -309,7 +309,7 @@ export function TaskGroup({
               {badgeLabel}
             </Badge>
           )}
-          <span className="text-meta whitespace-nowrap">
+          <span className="text-meta whitespace-nowrap" suppressHydrationWarning>
             {formatDistanceToNow(new Date(session.modified_at), {
               addSuffix: true,
             })}

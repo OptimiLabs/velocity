@@ -26,6 +26,12 @@ bun install
 useful if you want setup to complete before launching the dev server.
 Dependencies include native modules like `node-pty` and `better-sqlite3`.
 
+If PTY launch fails on macOS during setup, run:
+
+```bash
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
 ### 3. Verify the installation
 
 ```bash
@@ -82,6 +88,23 @@ If you switch Node.js versions or encounter runtime errors:
 
 ```bash
 bun install --force
+```
+
+### `spawn-helper` is not executable (macOS)
+
+If PTY sessions fail to launch with a permission error, make `spawn-helper`
+executable:
+
+```bash
+chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+# or (portable across prebuild folders)
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
+Then restart the dev server:
+
+```bash
+bun dev
 ```
 
 ### better-sqlite3 issues

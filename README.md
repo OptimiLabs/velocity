@@ -64,6 +64,12 @@ bun install
 bun dev
 ```
 
+If Console PTY launch fails on macOS during setup, run:
+
+```bash
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
 Open [http://localhost:3000](http://localhost:3000).
 
 ## Workflow-First Mental Model
@@ -132,6 +138,18 @@ bun install
 1. Verify `bun dev` starts without PTY errors.
 2. Hard refresh browser.
 3. Clear persisted local layout state.
+
+### `node-pty` spawn-helper permission denied (macOS)
+
+If PTY launch fails because `spawn-helper` is not executable:
+
+```bash
+chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+# or (portable across prebuild folders)
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
+Then restart `bun dev`.
 
 ## Security
 

@@ -41,6 +41,14 @@ Thank you for your interest in contributing to Velocity! This guide will help yo
    `WebSocket server + watchers started` in the terminal output. If Console
    terminals are blank, see the troubleshooting section in the README.
 
+   If `node-pty` fails with a spawn-helper permission error on macOS:
+
+   ```bash
+   chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+   # or (portable across prebuild folders)
+   chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+   ```
+
 ## Development Workflow
 
 ### Branching
