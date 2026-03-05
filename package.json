@@ -66,7 +66,7 @@
     "next-themes": "^0.4.6",
     "node-pty": "^1.1.0",
     "radix-ui": "^1.4.3",
-    "react": "19.2.3",
+    "react": "19.2.4",
     "react-day-picker": "^9",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
